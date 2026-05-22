@@ -1,0 +1,52 @@
+{
+  "camera_source": "C:\\Users\\12057\\Desktop\\test\\dataset_augmented\\images\\train",
+  "camera_ffmpeg_opts": {
+    "rtsp_transport": "tcp"
+  },
+  "max_retries" : 10,
+  "yolo_weights": "yolov8n.pt",
+  "yolo_weights_h": "yolov8n_h.pt",
+  "yolo_weights_grade": "yolov8n.pt",
+  "confidence": 0.6,
+  "output_folder": "test_output",
+  "h_label": "H",
+  "grade_labels": [],
+  "grade_search_attempts": 5,
+  "grade_search_step": 0.2,
+  "grade_distance_scale": 2.0,
+  "report_url": "",
+  "drone": {
+    "enabled": false,
+    "initial_position": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+    }
+  },
+  "waypoints": [
+    {
+      "name": "point_1",
+      "x": 0.0,
+      "y": 0.0,
+      "z": 1.5
+    },
+    {
+      "name": "point_2",
+      "x": 0.5,
+      "y": 0.0,
+      "z": 1.5
+    },
+    {
+      "name": "point_3",
+      "x": 0.5,
+      "y": 0.5,
+      "z": 1.5
+    },
+    {
+      "name": "point_4",
+      "x": 0.0,
+      "y": 0.5,
+      "z": 1.5
+    }
+  ]
+}
