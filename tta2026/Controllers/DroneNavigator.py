@@ -135,7 +135,8 @@ class DroneNavigator:
                 grade_info = self.find_grade_near_h(h_candidate['box'], grade_detection)
                 grade_image_path = h_image_path
 
-                print(f"[DroneNavigator] {waypoint.name} 搜索尝试 {attempt}, 偏移 ({ox}, {oy}) → H={h_candidate['label']}({h_candidate['confidence']:.2f}), 等级候选={grade_info['label']}({grade_info.get('confidence', 0.0):.2f})")
+
+                print(f"[DroneNavigator] {waypoint.name} 搜索尝试 {attempt}, 偏移 ({ox}, {oy}) → H={h_candidate['label']}({h_candidate['confidence']:.2f}), 等级检测={grade_detection}, 等级候选={grade_info['label']}({grade_info.get('confidence', 0.0):.2f})")
                 if grade_info['label'] == 'unknown':
                     grade_info, grade_image_path = self.search_grade_nearby(waypoint, h_candidate)
 
@@ -198,8 +199,10 @@ class DroneNavigator:
 
         for obj in detection['objects']:
             if self.grade_labels and obj['label'] not in self.grade_labels:
+                print(f"[DroneNavigator] 跳过非等级候选: {obj['label']}")
                 continue
-
+            
+            print(f"[DroneNavigator] 评估等级候选: {obj['label']} at {obj['box']} with confidence {obj['confidence']:.2f}")
             ox1, oy1, ox2, oy2 = obj['box']
             o_cx = (ox1 + ox2) / 2.0
             o_cy = (oy1 + oy2) / 2.0

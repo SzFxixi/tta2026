@@ -7,7 +7,7 @@
   "yolo_weights_grade": "yolov8n_grade.pt",
   "confidence": 0.6,
   "h_label": "H",
-  "grade_labels": ["1", "2", "3"],
+  "grade_labels": ["ruin","collapse","leak_danger","leak_fire","leak_water","trapped_people","fire_trapped_people","ruin_trapped_people","drop_water","earthquake"],
   "grade_mapping": {
     "1": ["trapped_people", "fire_trapped_people","ruin_trapped_people","drop_water"],
     "2": ["leak_danger", "collapse","ruin"],
