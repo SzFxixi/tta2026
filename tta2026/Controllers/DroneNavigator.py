@@ -305,3 +305,64 @@ class DroneNavigator:
         detection = self.detect_frame(image, self.grade_model)
         self.annotate_and_save(image, detection, os.path.splitext(os.path.basename(image_path))[0])
         return detection
+
+    def stream_test(self) -> None:
+        """实时拉流并显示 H + 等级检测画面，按 Q 退出。不控制无人机。"""
+        print(f"[DroneNavigator] 开始视频流测试: {self.camera_source}")
+        cv2.namedWindow("Stream Test - H & Grade Detection", cv2.WINDOW_NORMAL)
+
+        frame_count = 0
+        try:
+            while True:
+                frame = self.capture_frame()
+                if frame is None:
+                    print("[DroneNavigator] 无法获取帧，等待重试...")
+                    time.sleep(1.0)
+                    continue
+
+                frame_count += 1
+
+                # H 检测
+                h_detection = self.detect_frame(frame, self.h_model)
+                h_candidate = self.find_best_h(h_detection)
+
+                # 等级检测
+                grade_info: Dict[str, Any] = {"label": "unknown", "confidence": 0.0}
+                if h_candidate is not None:
+                    grade_detection = self.detect_frame(frame, self.grade_model)
+                    grade_info = self.find_grade_near_h(h_candidate["box"], grade_detection)
+                    if grade_info.get("label", "unknown") == "unknown":
+                        grade_detection_full = self.detect_frame(frame, self.grade_model)
+                        for obj in grade_detection_full.get("objects", []):
+                            if obj.get("label", "unknown") != "unknown":
+                                grade_info = obj
+                                break
+
+                # 显示
+                display = frame.copy()
+                for obj in h_detection.get("objects", []):
+                    x1, y1, x2, y2 = [int(v) for v in obj["box"]]
+                    cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                    cv2.putText(display, f'H {obj["confidence"]:.2f}', (x1, max(20, y1 - 8)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+
+                raw_label = grade_info.get("label", "unknown")
+                mapped_grade = self._map_type_to_grade(raw_label)
+                status_text = f'Frame #{frame_count} | Grade: {raw_label} -> {mapped_grade}'
+                if h_candidate is not None:
+                    status_text += f' | H found'
+                cv2.putText(display, status_text, (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                cv2.imshow("Stream Test - H & Grade Detection", display)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    print("[DroneNavigator] 用户退出视频流测试")
+                    break
+
+        except KeyboardInterrupt:
+            print("[DroneNavigator] 视频流测试被中断")
+        finally:
+            cv2.destroyAllWindows()
+            self.camera.release()
+            print(f"[DroneNavigator] 视频流测试结束，共处理 {frame_count} 帧")

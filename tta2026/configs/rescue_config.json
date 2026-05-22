@@ -1,5 +1,5 @@
 {
-  "camera_source": "rtsp://192.168.1.100:554/stream",
+  "camera_source": "rtmp://192.168.31.212/live",
   "camera_ffmpeg_opts": {
     "rtsp_transport": "tcp"
   },
@@ -20,7 +20,7 @@
   "search_max_attempts": 8,
   "search_step": 0.2,
   "drone": {
-    "enabled": false,
+    "enabled": true,
     "control_url": "http://127.0.0.1:5000/drone_command",
     "initial_position": {
       "x": 0.0,

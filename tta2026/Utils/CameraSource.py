@@ -38,35 +38,41 @@ class CameraSource:
 
         # 尝试作为 RTSP/RTMP 流
         if self.source.lower().startswith(('rtsp://', 'rtmp://')):
-            stream_url = self.source
-            # 拼接 FFMPEG 选项
-            for key, value in self.ffmpeg_opts.items():
-                stream_url += f" {key}={value}"
-            try:
-                self.capture = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
-                if self.capture.isOpened():
-                    print(f"[CameraSource] 打开流: {self.source}")
-                    return
-                else:
-                    print(f"[CameraSource] 警告: 无法打开流 {self.source}，尝试重连...")
-                    self._reconnect_stream(stream_url)
-                    return
-            except Exception as e:
-                print(f"[CameraSource] 错误: 打开流失败 {self.source}, {e}")
-                raise ValueError(f"无法打开流: {self.source}")
+            # 通过环境变量设置 FFMPEG 选项（OpenCV 的正确方式）
+            if self.ffmpeg_opts:
+                opts_str = '|'.join(f'{k}={v}' for k, v in self.ffmpeg_opts.items())
+                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = opts_str
+                print(f"[CameraSource] 设置 FFMPEG 选项: {opts_str}")
+
+            self.capture = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+            if self.capture.isOpened():
+                print(f"[CameraSource] 打开流: {self.source}")
+                return
+
+            # 回退：尝试不指定 CAP_FFMPEG 让 OpenCV 自动选择后端
+            print(f"[CameraSource] CAP_FFMPEG 打开失败，尝试自动后端...")
+            self.capture = cv2.VideoCapture(self.source)
+            if self.capture.isOpened():
+                print(f"[CameraSource] 自动后端打开流成功: {self.source}")
+                return
+
+            raise ConnectionError(
+                f"无法打开流: {self.source}\n"
+                f"  请检查: (1) 无人机是否正在推流 (2) IP 和端口是否正确 (3) 防火墙是否放行\n"
+                f"  提示: 先用 ffplay {self.source} 验证流是否可达"
+            )
 
         raise ValueError(f"未知的 camera_source: {self.source}")
 
-    def _reconnect_stream(self, stream_url: str) -> None:
-        """重新连接流（可选重试逻辑）。"""
-        try:
-            self.capture = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
-            if self.capture.isOpened():
-                print(f"[CameraSource] 流重连成功")
-            else:
-                print(f"[CameraSource] 流重连失败")
-        except Exception as e:
-            print(f"[CameraSource] 流重连异常: {e}")
+    def reconnect_stream(self) -> bool:
+        """重新连接流，返回是否成功。"""
+        self.release()
+        self.capture = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+        if not self.capture.isOpened():
+            self.capture = cv2.VideoCapture(self.source)
+        ok = self.capture is not None and self.capture.isOpened()
+        print(f"[CameraSource] 流重连{'成功' if ok else '失败'}")
+        return ok
 
     def read(self) -> Tuple[bool, Optional[Any]]:
         if self.capture is not None:

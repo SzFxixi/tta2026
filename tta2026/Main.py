@@ -9,9 +9,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='智慧救援 — 无人机巡检+等级识别')
     parser.add_argument('--config', type=str, required=True, help='配置文件 JSON 路径')
     parser.add_argument('--image', type=str, default=None, help='单张图片检测（不飞行）')
+    parser.add_argument('--stream', action='store_true', help='实时拉流测试（H + 等级检测画面，不飞行）')
     args = parser.parse_args()
 
     config = JsonHelper.load_json(args.config)
+
+    if args.stream:
+        navigator = DroneNavigator(config)
+        navigator.stream_test()
+        return
 
     if args.image:
         navigator = DroneNavigator(config)
