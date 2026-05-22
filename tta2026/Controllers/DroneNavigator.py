@@ -31,7 +31,13 @@ class DroneNavigator:
 
         self.drone = DroneControlClient(config.get('drone', {}))
         ffmpeg_opts = config.get('camera_ffmpeg_opts', {})
-        self.camera = CameraSource(self.camera_source, ffmpeg_opts=ffmpeg_opts, loop=config.get('camera_loop', True))
+        self.camera = CameraSource(
+            self.camera_source,
+            ffmpeg_opts=ffmpeg_opts,
+            loop=config.get('camera_loop', True),
+            listen=config.get('listen', False),
+            listen_fps=config.get('listen_fps', 30),
+        )
         self.waypoints = self._load_waypoints(config.get('waypoints', []))
         # 搜索参数：在已知大致点位周围做小范围搜索以精确定位目标
         self.search_max_attempts = int(config.get('search_max_attempts', 8))
@@ -309,18 +315,33 @@ class DroneNavigator:
     def stream_test(self) -> None:
         """实时拉流并显示 H + 等级检测画面，按 Q 退出。不控制无人机。"""
         print(f"[DroneNavigator] 开始视频流测试: {self.camera_source}")
-        cv2.namedWindow("Stream Test - H & Grade Detection", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("Stream Test - H & Grade Detection", cv2.WINDOW_KEEPRATIO)
 
         frame_count = 0
+        no_frame_count = 0
+        first_frame = True
         try:
             while True:
                 frame = self.capture_frame()
                 if frame is None:
-                    print("[DroneNavigator] 无法获取帧，等待重试...")
-                    time.sleep(1.0)
+                    no_frame_count += 1
+                    if no_frame_count == 1:
+                        print("[DroneNavigator] 等待视频流...")
+                    time.sleep(0.5)
+                    # 也处理窗口事件，防止灰屏
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        break
                     continue
 
+                no_frame_count = 0
                 frame_count += 1
+
+                # 首帧出现时自动适配窗口大小
+                if first_frame:
+                    first_frame = False
+                    h, w = frame.shape[:2]
+                    print(f"[DroneNavigator] 收到视频流，分辨率: {w}x{h}")
 
                 # H 检测
                 h_detection = self.detect_frame(frame, self.h_model)
