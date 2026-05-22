@@ -1,0 +1,22 @@
+{
+  "camera_source": "rtmp://0.0.0.0:1935/live",
+  "listen": true,
+  "listen_fps": 30,
+  "camera_loop": true,
+  "yolo_weights": "yolov8n.pt",
+  "yolo_weights_h": "yolov8n_h.pt",
+  "yolo_weights_grade": "yolov8n_grade.pt",
+  "confidence": 0.6,
+  "h_label": "H",
+  "grade_labels": ["ruin","collapse","leak_danger","leak_fire","leak_water","trapped_people","fire_trapped_people","ruin_trapped_people","drop_water","earthquake"],
+  "grade_mapping": {
+    "1": ["trapped_people", "fire_trapped_people","ruin_trapped_people","drop_water"],
+    "2": ["leak_danger", "collapse","ruin"],
+    "3": ["earthquake", "leak_fire", "leak_water"]
+  },
+  "grade_distance_scale": 10.0,
+  "drone": {
+    "enabled": false
+  },
+  "waypoints": []
+}

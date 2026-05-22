@@ -1,5 +1,5 @@
 {
-  "camera_source": "rtmp://192.168.31.212/live",
+  "camera_source": "rtmp://0.0.0.0:1935/live",
   "camera_ffmpeg_opts": {
     "rtsp_transport": "tcp"
   },
