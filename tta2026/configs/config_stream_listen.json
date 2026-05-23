@@ -16,7 +16,9 @@
   },
   "grade_distance_scale": 10.0,
   "drone": {
-    "enabled": false
+    "enabled": false,
+    "ip": "192.168.31.100",
+    "port": 18080
   },
   "waypoints": []
 }

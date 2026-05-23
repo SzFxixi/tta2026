@@ -19,7 +19,9 @@
   "search_step": 0.5,
   "drone": {
     "enabled": true,
-    "control_url": "http://192.168.31.100:5000/drone_command",
+    "ip": "192.168.31.100",
+    "port": 18080,
+    "max_retries": 5,
     "initial_position": {
       "x": 0.0,
       "y": 0.0,
