@@ -1,6 +1,0 @@
-train: dataset/images/train
-val: dataset/images/val
-
-nc: 10
-
-names: ['ruin', 'leak_water', 'earthquake','fire_trapped_people','ruin_trapped_people','drop_water','trapped_people','collaspe','leak_danger','leak fire']

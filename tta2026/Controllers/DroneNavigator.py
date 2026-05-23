@@ -44,6 +44,8 @@ class DroneNavigator:
         self.search_step = float(config.get('search_step', 0.2))
         self.grade_search_attempts = int(config.get('grade_search_attempts', 5))
         self.grade_search_step = float(config.get('grade_search_step', 0.2))
+        self.servo_max_attempts = int(config.get('servo_max_attempts', 3))
+        self.h_marker_size = float(config.get('h_marker_size', 0.15))
 
         self.h_label = config.get('h_label', 'H')
         raw_grade_labels = config.get('grade_labels', [])
@@ -96,64 +98,142 @@ class DroneNavigator:
             time.sleep(0.5)
         return None
 
-    def search_and_scan_at(self, waypoint: Waypoint) -> Dict[str, Any]:
-        """
-        在给定的近似航点周围做本地搜索，直到检测到 H 并完成等级识别。
+    # ------------------------------------------------------------------
+    # 新搜索算法：单帧双模型 + 视觉伺服 + 螺旋展开
+    # ------------------------------------------------------------------
 
-        返回值: dict 包含 'success'(bool), 'h_detection', 'grade', 'image_path'
+    def detect_all(self, frame: Any) -> Dict[str, Any]:
+        """一帧同时跑 H 和等级两个模型，返回合并的检测结果。"""
+        h_detection = self.detect_frame(frame, self.h_model)
+        grade_detection = self.detect_frame(frame, self.grade_model)
+
+        h_candidate = self.find_best_h(h_detection)
+        grade_info: Dict[str, Any] = {'label': 'unknown', 'confidence': 0.0, 'box': [], 'distance': float('inf')}
+        if h_candidate is not None:
+            grade_info = self.find_grade_near_h(h_candidate['box'], grade_detection)
+
+        return {
+            'h_candidate': h_candidate,
+            'h_objects': h_detection.get('objects', []),
+            'grade_info': grade_info,
+            'grade_objects': grade_detection.get('objects', []),
+        }
+
+    def _servo_toward_h(self, h_box: List[float], frame_shape: tuple) -> bool:
+        """
+        视觉伺服：根据 H 在画面中的像素偏移，微移无人机使 H 靠近画面中心。
+        返回 True 表示已发起移动，False 表示偏移量太小无需移动。
+        """
+        height, width = frame_shape[:2]
+        cx = width / 2.0
+        cy = height / 2.0
+
+        x1, y1, x2, y2 = h_box
+        h_cx = (x1 + x2) / 2.0
+        h_cy = (y1 + y2) / 2.0
+        h_pixel_size = max(x2 - x1, y2 - y1)
+
+        # 像素偏移
+        dx_px = h_cx - cx
+        dy_px = h_cy - cy
+
+        # 像素 → 米换算：已知 H 物理尺寸 / H 像素尺寸
+        if h_pixel_size < 1:
+            return False
+        meters_per_pixel = self.h_marker_size / h_pixel_size
+
+        dx_m = dx_px * meters_per_pixel
+        dy_m = dy_px * meters_per_pixel
+        offset_m = (dx_m ** 2 + dy_m ** 2) ** 0.5
+
+        # 偏移小于 5cm 认为已居中
+        if offset_m < 0.05:
+            print(f"[DroneNavigator] 视觉伺服: H 已居中 (offset={offset_m:.3f}m)")
+            return False
+
+        print(f"[DroneNavigator] 视觉伺服: H 偏移 ({dx_px:.0f}, {dy_px:.0f})px → 移动 ({dx_m:.3f}, {dy_m:.3f})m")
+        return self.drone.move_to(
+            self.drone.state['x'] + dx_m,
+            self.drone.state['y'] + dy_m,
+            self.drone.state['z'],
+        )
+
+    def _next_spiral_offset(self, attempt: int) -> tuple[float, float]:
+        """螺旋展开：中心 → 十字 → 对角，逐步扩大搜索半径。"""
+        if attempt <= 0:
+            return 0.0, 0.0
+        step = self.search_step * ((attempt + 1) // 2)
+        offsets = [
+            (step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step),
+            (step, step), (-step, -step), (step, -step), (-step, step),
+        ]
+        idx = (attempt - 1) % len(offsets)
+        return offsets[idx]
+
+    def scan_single_waypoint(self, waypoint: Waypoint) -> Dict[str, Any]:
+        """
+        单航点扫描：飞到航点 → 视觉伺服闭环找到 H → 识别等级。
+        最多 servo_max_attempts 轮。
         """
         if not self.drone.move_to(waypoint.x, waypoint.y, waypoint.z):
             return {'success': False, 'reason': 'move_failed'}
 
-        offsets = [
-            (0.0, 0.0),
-            (self.search_step, 0.0),
-            (-self.search_step, 0.0),
-            (0.0, self.search_step),
-            (0.0, -self.search_step),
-            (self.search_step, self.search_step),
-            (-self.search_step, -self.search_step),
-        ]
+        for attempt in range(self.servo_max_attempts):
+            # 非首轮：螺旋展开微移
+            if attempt > 0:
+                ox, oy = self._next_spiral_offset(attempt)
+                self.drone.move_to(waypoint.x + ox, waypoint.y + oy, waypoint.z)
+                time.sleep(0.3)
 
-        attempt = 0
-        while attempt < self.search_max_attempts:
-            for ox, oy in offsets:
-                target_x = waypoint.x + ox
-                target_y = waypoint.y + oy
-                if not self.drone.move_to(target_x, target_y, waypoint.z):
-                    continue
+            frame = self.capture_frame()
+            if frame is None:
+                continue
 
-                frame = self.capture_frame()
-                if frame is None:
-                    continue
+            all_detections = self.detect_all(frame)
+            h_candidate = all_detections['h_candidate']
+            grade_info = all_detections['grade_info']
 
-                h_detection = self.detect_frame(frame, self.h_model)
-                h_candidate = self.find_best_h(h_detection)
-                prefix = f'scan_{waypoint.name}_{attempt}_{int(ox*100)}_{int(oy*100)}'
-                h_image_path = self.annotate_and_save(frame, h_detection, prefix + '_h')
+            prefix = f'scan_{waypoint.name}_{attempt}'
+            combined = {'objects': all_detections['grade_objects'] + all_detections['h_objects']}
+            image_path = self.annotate_and_save(frame, combined, prefix)
 
-                if not h_candidate:
-                    print(f"[DroneNavigator] {waypoint.name} 搜索尝试 {attempt}, 偏移 ({ox}, {oy}) → 未检测到 H")
-                    time.sleep(0.5)
-                    continue
+            print(f"[DroneNavigator] {waypoint.name} 第{attempt}轮: H={h_candidate['label'] if h_candidate else 'none'}, 等级={grade_info['label']}")
 
-                grade_detection = self.detect_frame(frame, self.grade_model)
-                grade_info = self.find_grade_near_h(h_candidate['box'], grade_detection)
-                grade_image_path = h_image_path
-
-
-                print(f"[DroneNavigator] {waypoint.name} 搜索尝试 {attempt}, 偏移 ({ox}, {oy}) → H={h_candidate['label']}({h_candidate['confidence']:.2f}), 等级检测={grade_detection}, 等级候选={grade_info['label']}({grade_info.get('confidence', 0.0):.2f})")
-                if grade_info['label'] == 'unknown':
-                    grade_info, grade_image_path = self.search_grade_nearby(waypoint, h_candidate)
-
+            # 情况 A：H 和等级都找到了 → 返回
+            if h_candidate is not None and grade_info.get('label', 'unknown') != 'unknown':
                 return {
                     'success': True,
-                    'detection': h_detection,
+                    'detection': {'objects': all_detections['h_objects']},
                     'h_detection': h_candidate,
                     'grade': grade_info,
-                    'image_path': grade_image_path,
+                    'image_path': image_path,
                 }
-            attempt += 1
+
+            # 情况 B：找到 H 但没找到等级 → 视觉伺服靠近 H
+            if h_candidate is not None and grade_info.get('label', 'unknown') == 'unknown':
+                self._servo_toward_h(h_candidate['box'], frame.shape)
+                time.sleep(0.3)
+                continue
+
+            # 情况 C：H 也没找到 → 下一轮螺旋展开
+            time.sleep(0.3)
+
+        # 所有轮次后最后试一次：飞到航点正上方再拍
+        if not self.drone.move_to(waypoint.x, waypoint.y, waypoint.z):
+            return {'success': False, 'reason': 'not_found'}
+        frame = self.capture_frame()
+        if frame is not None:
+            all_detections = self.detect_all(frame)
+            h_candidate = all_detections['h_candidate']
+            grade_info = all_detections['grade_info']
+            if h_candidate is not None:
+                return {
+                    'success': True,
+                    'detection': {'objects': all_detections['h_objects']},
+                    'h_detection': h_candidate,
+                    'grade': grade_info,
+                    'image_path': '',
+                }
 
         return {'success': False, 'reason': 'not_found'}
 
@@ -223,37 +303,6 @@ class DroneNavigator:
 
         return {'label': 'unknown', 'confidence': 0.0, 'box': [], 'distance': float('inf')}
 
-    def search_grade_nearby(self, waypoint: Waypoint, h_candidate: Dict[str, Any]) -> tuple[Dict[str, Any], str]:
-        offsets = [
-            (0.0, 0.0),
-            (self.grade_search_step, 0.0),
-            (-self.grade_search_step, 0.0),
-            (0.0, self.grade_search_step),
-            (0.0, -self.grade_search_step),
-        ]
-        grade_image_path = ''
-        for attempt in range(self.grade_search_attempts):
-            for ox, oy in offsets:
-                target_x = waypoint.x + ox
-                target_y = waypoint.y + oy
-                if not self.drone.move_to(target_x, target_y, waypoint.z):
-                    continue
-
-                frame = self.capture_frame()
-                if frame is None:
-                    continue
-
-                grade_detection = self.detect_frame(frame, self.grade_model)
-                grade_info = self.find_grade_near_h(h_candidate['box'], grade_detection)
-                prefix = f'grade_{waypoint.name}_{attempt}_{int(ox*100)}_{int(oy*100)}'
-                grade_image_path = self.annotate_and_save(frame, grade_detection, prefix)
-
-                if grade_info['label'] != 'unknown':
-                    return grade_info, grade_image_path
-
-                time.sleep(0.5)
-        return {'label': 'unknown', 'confidence': 0.0, 'box': [], 'distance': float('inf')}, grade_image_path
-
     def annotate_and_save(self, frame: Any, detection: Dict[str, Any], prefix: str) -> str:
         filename = os.path.join(self.output_folder, f'{prefix}.jpg')
         annotated = frame.copy()
@@ -275,7 +324,7 @@ class DroneNavigator:
 
         for waypoint in self.waypoints:
             print(f"[DroneNavigator] 扫描 {waypoint.name}: ({waypoint.x}, {waypoint.y}, {waypoint.z})")
-            result = self.search_and_scan_at(waypoint)
+            result = self.scan_single_waypoint(waypoint)
 
             if result.get('success'):
                 grade_info = result.get('grade', {})
@@ -343,29 +392,23 @@ class DroneNavigator:
                     h, w = frame.shape[:2]
                     print(f"[DroneNavigator] 收到视频流，分辨率: {w}x{h}")
 
-                # H 检测
-                h_detection = self.detect_frame(frame, self.h_model)
-                h_candidate = self.find_best_h(h_detection)
-
-                # 等级检测
-                grade_info: Dict[str, Any] = {"label": "unknown", "confidence": 0.0}
-                if h_candidate is not None:
-                    grade_detection = self.detect_frame(frame, self.grade_model)
-                    grade_info = self.find_grade_near_h(h_candidate["box"], grade_detection)
-                    if grade_info.get("label", "unknown") == "unknown":
-                        grade_detection_full = self.detect_frame(frame, self.grade_model)
-                        for obj in grade_detection_full.get("objects", []):
-                            if obj.get("label", "unknown") != "unknown":
-                                grade_info = obj
-                                break
+                # 同时检测 H 和等级
+                all_det = self.detect_all(frame)
+                h_candidate = all_det['h_candidate']
+                grade_info = all_det['grade_info']
 
                 # 显示
                 display = frame.copy()
-                for obj in h_detection.get("objects", []):
-                    x1, y1, x2, y2 = [int(v) for v in obj["box"]]
+                for obj in all_det['h_objects']:
+                    x1, y1, x2, y2 = [int(v) for v in obj['box']]
                     cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 255), 2)
                     cv2.putText(display, f'H {obj["confidence"]:.2f}', (x1, max(20, y1 - 8)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                for obj in all_det['grade_objects']:
+                    x1, y1, x2, y2 = [int(v) for v in obj['box']]
+                    cv2.rectangle(display, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                    cv2.putText(display, f'{obj["label"]} {obj["confidence"]:.2f}', (x1, max(20, y1 - 8)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
                 raw_label = grade_info.get("label", "unknown")
                 mapped_grade = self._map_type_to_grade(raw_label)
