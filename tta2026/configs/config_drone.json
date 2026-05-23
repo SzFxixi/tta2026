@@ -1,7 +1,8 @@
 {
-  "camera_source": "test_images",
+  "camera_source": "rtmp://0.0.0.0:1935/live",
+  "listen": true,
+  "listen_fps": 30,
   "camera_loop": true,
-  "camera_ffmpeg_opts": {},
   "yolo_weights": "yolov8n.pt",
   "yolo_weights_h": "yolov8n_h.pt",
   "yolo_weights_grade": "yolov8n_grade.pt",
@@ -10,28 +11,27 @@
   "grade_labels": ["ruin","collapse","leak_danger","leak_fire","leak_water","trapped_people","fire_trapped_people","ruin_trapped_people","drop_water","earthquake"],
   "grade_mapping": {
     "1": ["trapped_people", "fire_trapped_people","ruin_trapped_people","drop_water"],
-    "2": ["leak_danger", "collaspe","ruin"],
-    "3": ["earthquake", "leak_fire", "leak_water","leak fire"]
+    "2": ["leak_danger", "collapse","ruin"],
+    "3": ["earthquake", "leak_fire", "leak_water"]
   },
-  "grade_search_attempts": 1,
-  "grade_search_step": 0.5,
   "grade_distance_scale": 10.0,
   "search_max_attempts": 3,
   "search_step": 0.5,
   "drone": {
-    "enabled": false
+    "enabled": true,
+    "control_url": "http://192.168.31.100:5000/drone_command",
+    "initial_position": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 0.0
+    }
   },
   "waypoints": [
     { "name": "救援点1", "x": 0.0, "y": 0.0, "z": 1.5 },
-    { "name": "救援点2", "x": 0.0, "y": 0.0, "z": 1.5 },
-    { "name": "救援点3", "x": 0.0, "y": 0.0, "z": 1.5 },
-    { "name": "救援点4", "x": 0.0, "y": 0.0, "z": 1.5 }
-  ],
-  "rescue_points": [
-    { "name": "救援点1" },
-    { "name": "救援点2" },
-    { "name": "救援点3" },
-    { "name": "救援点4" }
+    { "name": "救援点2", "x": 0.5, "y": 0.0, "z": 1.5 },
+    { "name": "救援点3", "x": 0.5, "y": 0.5, "z": 1.5 },
+    { "name": "救援点4", "x": 0.0, "y": 0.5, "z": 1.5 }
   ],
   "output": {
     "folder": "output",

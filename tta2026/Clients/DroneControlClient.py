@@ -74,6 +74,33 @@ class DroneControlClient:
 
         return False
 
+    def query_status(self) -> Dict[str, Any]:
+        """查询无人机实时状态 (GET /drone_status)。"""
+        status_url = self.control_url.rstrip("/") + "/drone_status"
+
+        if not self.enabled or not self.control_url:
+            return {"error": "模拟模式，无真实状态"}
+
+        import urllib.request
+
+        try:
+            req = urllib.request.Request(status_url)
+            response = urllib.request.urlopen(req, timeout=5)
+            return json.loads(response.read().decode("utf-8"))
+        except Exception as e:
+            return {"error": str(e)}
+
+    def health_check(self) -> bool:
+        """检查无人机服务是否可达。"""
+        health_url = self.control_url.rstrip("/") + "/health"
+        import urllib.request
+        try:
+            req = urllib.request.Request(health_url)
+            urllib.request.urlopen(req, timeout=3)
+            return True
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------
     # 基本飞控
     # ------------------------------------------------------------------
