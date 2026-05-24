@@ -1,5 +1,6 @@
 {
   "camera_source": "rtmp://0.0.0.0:1935/live",
+  "listen": true,
   "camera_ffmpeg_opts": {
     "rtsp_transport": "tcp"
   },
@@ -17,7 +18,7 @@
   "grade_search_attempts": 5,
   "grade_search_step": 0.2,
   "grade_distance_scale": 2.0,
-  "search_max_attempts": 8,
+  "search_max_attempts": 3,
   "search_step": 0.2,
   "drone": {
     "enabled": true,
@@ -39,10 +40,10 @@
     }
   },
   "waypoints": [
-    { "name": "救援点1", "x": 0.5,  "y": -1.5, "z": 1.5 },
-    { "name": "救援点2", "x": 3.0,  "y": -1.5, "z": 1.5 },
-    { "name": "救援点3", "x": 3.0,  "y":  3.0, "z": 1.5 },
-    { "name": "救援点4", "x": 0.5,  "y":  3.0, "z": 1.5 }
+    { "name": "救援点1", "x": -0.5,  "y": 1, "z": 1.5 },
+    { "name": "救援点2", "x": 0.5,  "y": 1, "z": 1.5 },
+    { "name": "救援点3", "x": 0.5,  "y":  -1, "z": 1.5 },
+    { "name": "救援点4", "x": -0.5,  "y":  -1, "z": 1.5 }
   ],
   "rescue_points": [
     { "name": "救援点1" },
