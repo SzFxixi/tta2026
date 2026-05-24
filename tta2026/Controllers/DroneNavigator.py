@@ -218,9 +218,7 @@ class DroneNavigator:
             # 情况 C：H 也没找到 → 下一轮螺旋展开
             time.sleep(0.3)
 
-        # 所有轮次后最后试一次：飞到航点正上方再拍
-        if not self.drone.move_to(waypoint.x, waypoint.y, waypoint.z):
-            return {'success': False, 'reason': 'not_found'}
+        # 所有轮次后最后试一次：当前位置再拍
         frame = self.capture_frame()
         if frame is not None:
             all_detections = self.detect_all(frame)
@@ -319,8 +317,16 @@ class DroneNavigator:
     def scan_waypoints(self) -> Dict[str, Dict[str, Any]]:
         """执行四点位巡检，返回 {waypoint_name: {grade, confidence, image_path, success}}。"""
         results: Dict[str, Dict[str, Any]] = {}
+
+        print("[DroneNavigator] 重置飞控状态...")
+        self.drone.reset()
+        time.sleep(1)
+
         if not self.takeoff():
             raise RuntimeError('无人机起飞失败')
+
+        print("[DroneNavigator] 等待起飞完成 & 状态稳定...")
+        time.sleep(6)
 
         for waypoint in self.waypoints:
             print(f"[DroneNavigator] 扫描 {waypoint.name}: ({waypoint.x}, {waypoint.y}, {waypoint.z})")

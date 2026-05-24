@@ -17,7 +17,7 @@
   "report_url": "",
   "drone": {
     "enabled": false,
-    "ip": "192.168.31.100",
+    "ip": "192.168.31.172",
     "port": 18080,
     "initial_position": {
       "x": 0.0,

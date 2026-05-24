@@ -61,10 +61,19 @@ class DroneControlClient:
                 response = urllib.request.urlopen(req, timeout=10)
                 text = response.read().decode("utf-8")
                 print(f"[DroneControlClient] /{endpoint} → {text}")
+                try:
+                    result = json.loads(text)
+                    if not result.get("isSuccess", False):
+                        self.task_id -= 1  # 失败回滚
+                        print(f"[DroneControlClient] PlaneServer 拒绝: {result.get('errorMessage', 'unknown')}")
+                        return False
+                except json.JSONDecodeError:
+                    pass
                 return True
             except Exception as exc:
                 retry_count += 1
                 if retry_count >= self.max_retries:
+                    self.task_id -= 1  # 最终失败回滚
                     print(f"[DroneControlClient] 致命错误: /{endpoint} 重试 {retry_count} 次后仍失败: {exc}")
                     return False
                 delay = min(0.5 * (2 ** retry_count), self.max_backoff)
@@ -99,11 +108,33 @@ class DroneControlClient:
         if self.taken_off:
             print("[DroneControlClient] 已起飞")
             return True
+
+        # 尝试 PSDK StartTakeoff
         ok = self._send_command("Takeoff", {})
         if ok:
             self.taken_off = True
             self.state["z"] = max(self.state["z"], 1.2)
-        return ok
+            return True
+
+        # StartTakeoff 失败 → 用速度指令垂直上升
+        print("[DroneControlClient] StartTakeoff 被拒，尝试速度起飞...")
+        target_z = 1.5
+        dz = target_z - self.state["z"]
+        if dz < 0.5:
+            dz = 1.5
+
+        # 低速上升，避免触发避障急停
+        ascent_speed = 0.5
+        duration_ms = int(dz / ascent_speed * 1000)
+        ok = self._send_command("Translate", {"x": 0.0, "y": 0.0, "z": ascent_speed, "time": duration_ms})
+        if ok:
+            self.taken_off = True
+            self.state["z"] = target_z
+            print(f"[DroneControlClient] 速度起飞成功，到达 {target_z}m")
+            time.sleep(1)
+            return True
+
+        return False
 
     def land(self) -> bool:
         if not self.taken_off:
