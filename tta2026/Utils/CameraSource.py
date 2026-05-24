@@ -70,7 +70,7 @@ class CameraSource:
         # 不用 fps 滤镜，保持原始分辨率与帧率
         cmd = [
             ffmpeg,
-            '-loglevel', 'warning',
+            '-loglevel', 'error',
             '-listen', '1',
             '-rtmp_live', 'live',
             '-fflags', '+nobuffer+discardcorrupt+genpts',
