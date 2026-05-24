@@ -46,6 +46,7 @@ class DroneNavigator:
         self.grade_search_step = float(config.get('grade_search_step', 0.2))
         self.servo_max_attempts = int(config.get('servo_max_attempts', 3))
         self.h_marker_size = float(config.get('h_marker_size', 0.15))
+        self.show_camera = bool(config.get('show_camera', False))
 
         self.h_label = config.get('h_label', 'H')
         raw_grade_labels = config.get('grade_labels', [])
@@ -96,6 +97,7 @@ class DroneNavigator:
             if success and frame is not None:
                 return frame
             time.sleep(0.5)
+        print("[DroneNavigator] 警告: 5 次尝试仍无法获取画面帧")
         return None
 
     # ------------------------------------------------------------------
@@ -170,68 +172,87 @@ class DroneNavigator:
         idx = (attempt - 1) % len(offsets)
         return offsets[idx]
 
+    def _flush_camera(self, timeout: float = 3.0) -> None:
+        """丢弃管道里的旧帧，确保下一帧是最新画面。"""
+        start = time.time()
+        flushed = 0
+        while time.time() - start < timeout:
+            success, _ = self.camera.read()
+            if not success:
+                break
+            flushed += 1
+        if flushed > 0:
+            print(f"[DroneNavigator] 冲洗了 {flushed} 帧旧画面")
+
     def scan_single_waypoint(self, waypoint: Waypoint) -> Dict[str, Any]:
         """
-        单航点扫描：飞到航点 → 视觉伺服闭环找到 H → 识别等级。
+        单航点扫描：飞到航点 → 找到 H 并居中 → 识别等级 → 不再移动。
         最多 servo_max_attempts 轮。
         """
         if not self.drone.move_to(waypoint.x, waypoint.y, waypoint.z):
             return {'success': False, 'reason': 'move_failed'}
+
+        print(f"[DroneNavigator] 到达 {waypoint.name}，冲洗旧帧并等待摄像头...")
+        time.sleep(3)
+        self._flush_camera()
 
         for attempt in range(self.servo_max_attempts):
             # 非首轮：螺旋展开微移
             if attempt > 0:
                 ox, oy = self._next_spiral_offset(attempt)
                 self.drone.move_to(waypoint.x + ox, waypoint.y + oy, waypoint.z)
-                time.sleep(0.3)
+                time.sleep(3)
+                self._flush_camera()
 
             frame = self.capture_frame()
             if frame is None:
                 continue
 
+            h, w = frame.shape[:2]
             all_detections = self.detect_all(frame)
             h_candidate = all_detections['h_candidate']
             grade_info = all_detections['grade_info']
+            print(f"[DroneNavigator] 画面 {w}x{h} → H={h_candidate['label'] if h_candidate else 'none'}, 等级候选={grade_info.get('label','unknown')}")
 
             prefix = f'scan_{waypoint.name}_{attempt}'
             combined = {'objects': all_detections['grade_objects'] + all_detections['h_objects']}
-            image_path = self.annotate_and_save(frame, combined, prefix)
+            image_path, annotated = self.annotate_and_save(frame, combined, prefix)
+            self._preview(annotated)
 
             print(f"[DroneNavigator] {waypoint.name} 第{attempt}轮: H={h_candidate['label'] if h_candidate else 'none'}, 等级={grade_info['label']}")
 
-            # 情况 A：H 和等级都找到了 → 返回
-            if h_candidate is not None and grade_info.get('label', 'unknown') != 'unknown':
-                return {
-                    'success': True,
-                    'detection': {'objects': all_detections['h_objects']},
-                    'h_detection': h_candidate,
-                    'grade': grade_info,
-                    'image_path': image_path,
-                }
-
-            # 情况 B：找到 H 但没找到等级 → 视觉伺服靠近 H
-            if h_candidate is not None and grade_info.get('label', 'unknown') == 'unknown':
-                self._servo_toward_h(h_candidate['box'], frame.shape)
-                time.sleep(0.3)
+            # H 没找到 → 下一轮螺旋展开
+            if h_candidate is None:
                 continue
 
-            # 情况 C：H 也没找到 → 下一轮螺旋展开
-            time.sleep(0.3)
+            # 找到 H → 伺服居中 → 停稳后再拍一张识别等级
+            self._servo_toward_h(h_candidate['box'], frame.shape)
+            print(f"[DroneNavigator] 已居中 H，等待稳定后识别等级...")
+            time.sleep(3)
+            self._flush_camera()
 
-        # 所有轮次后最后试一次：当前位置再拍
-        frame = self.capture_frame()
-        if frame is not None:
-            all_detections = self.detect_all(frame)
-            h_candidate = all_detections['h_candidate']
-            grade_info = all_detections['grade_info']
-            if h_candidate is not None:
-                return {
-                    'success': True,
-                    'detection': {'objects': all_detections['h_objects']},
-                    'h_detection': h_candidate,
-                    'grade': grade_info,
-                    'image_path': '',
-                }
+            final_grade = grade_info
+            final_path = image_path
+
+            grade_frame = self.capture_frame()
+            if grade_frame is not None:
+                centered_all = self.detect_all(grade_frame)
+                h_box = centered_all['h_candidate']['box'] if centered_all['h_candidate'] else h_candidate['box']
+                final_grade = centered_all['grade_info']
+                if final_grade.get('label', 'unknown') == 'unknown' and centered_all['h_objects']:
+                    final_grade = self.find_grade_near_h(h_box, {'objects': centered_all['grade_objects']})
+                grade_combined = {'objects': centered_all['grade_objects'] + centered_all['h_objects']}
+                final_path, grade_annotated = self.annotate_and_save(grade_frame, grade_combined, f'{prefix}_centered')
+                self._preview(grade_annotated)
+                print(f"[DroneNavigator] {waypoint.name} 居中后: 等级={final_grade.get('label','unknown')}")
+
+            return {
+                'success': True,
+                'detection': {'objects': all_detections['h_objects']},
+                'h_detection': h_candidate,
+                'grade': final_grade,
+                'image_path': final_path,
+            }
 
         return {'success': False, 'reason': 'not_found'}
 
@@ -311,7 +332,18 @@ class DroneNavigator:
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(annotated, f'{label}:{confidence:.2f}', (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         cv2.imwrite(filename, annotated)
-        return filename
+        return filename, annotated
+
+    def _preview(self, frame: Any, title: str = "Drone Camera") -> None:
+        """如果 show_camera 为 True，弹窗显示当前帧。"""
+        if not self.show_camera:
+            return
+        cv2.imshow(title, frame)
+        cv2.waitKey(1)
+
+    def _close_preview(self) -> None:
+        if self.show_camera:
+            cv2.destroyAllWindows()
 
 
     def scan_waypoints(self) -> Dict[str, Dict[str, Any]]:
@@ -356,6 +388,10 @@ class DroneNavigator:
 
             time.sleep(1.0)
 
+        print("[DroneNavigator] 扫描完毕，返回原点 (0, 0, 1.5)...")
+        self.drone.move_to(0.0, 0.0, 1.5)
+        time.sleep(3)
+        self._close_preview()
         self.land()
         return results
 
