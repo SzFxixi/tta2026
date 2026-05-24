@@ -31,8 +31,8 @@ class DroneControlClient:
         self.taken_off = False
 
         speed_cfg = config.get("speed", {})
-        self.speed_translate = float(speed_cfg.get("translate", 1.0))
-        self.speed_rotate = float(speed_cfg.get("rotate", 30.0))
+        self.speed_translate = float(speed_cfg.get("translate", 0.5))
+        self.speed_rotate = float(speed_cfg.get("rotate", 15.0))
 
         threshold_cfg = config.get("threshold", {})
         self.threshold_translate = float(threshold_cfg.get("translate", 200))
@@ -157,7 +157,7 @@ class DroneControlClient:
         distance = math.sqrt(dx * dx + dy * dy + dz * dz)
         if distance < 0.001:
             return True
-
+        
         yaw_rad = math.radians(self.state["yaw"])
         relative_x, relative_y = MathHelper.rotate_axis(dx, dy, -yaw_rad)
 
@@ -210,4 +210,21 @@ class DroneControlClient:
         if ok:
             print(f"[DroneControlClient] 云台: pitch={pitch}°")
         time.sleep(0.5)
+        return ok
+
+    def get_posture(self) -> Dict[str, Any]:
+        """获取无人机实时位置与姿态（GET /GetPosture）。"""
+        if not self.enabled:
+            return {"yaw": self.state["yaw"]}
+        try:
+            url = f"{self.base_url}/GetPosture"
+            req = urllib.request.Request(url)
+            response = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(response.read().decode("utf-8"))
+            yaw = data.get("eulerAngles", {}).get("yaw", 0.0)
+            print(f"[DroneControlClient] 姿态: yaw={yaw:.1f}°")
+            return data
+        except Exception as e:
+            print(f"[DroneControlClient] 获取姿态失败: {e}")
+            return {"yaw": self.state["yaw"]}
         return ok
