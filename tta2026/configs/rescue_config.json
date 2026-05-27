@@ -10,11 +10,35 @@
   "yolo_weights_grade": "yolov8n_grade.pt",
   "confidence": 0.6,
   "h_label": "H",
-  "grade_labels": ["ruin","collapse","leak_danger","leak_fire","leak_water","trapped_people","fire_trapped_people","ruin_trapped_people","drop_water","earthquake"],
+  "grade_labels": [
+    "ruin",
+    "collapse",
+    "leak_danger",
+    "leak_fire",
+    "leak_water",
+    "trapped_people",
+    "fire_trapped_people",
+    "ruin_trapped_people",
+    "drop_water",
+    "earthquake"
+  ],
   "grade_mapping": {
-    "1": ["trapped_people", "fire_trapped_people","ruin_trapped_people","drop_water"],
-    "2": ["leak_danger", "collapse","ruin"],
-    "3": ["earthquake", "leak_fire", "leak_water"]
+    "1": [
+      "trapped_people",
+      "fire_trapped_people",
+      "ruin_trapped_people",
+      "drop_water"
+    ],
+    "2": [
+      "leak_danger",
+      "collapse",
+      "ruin"
+    ],
+    "3": [
+      "earthquake",
+      "leak_fire",
+      "leak_water"
+    ]
   },
   "grade_search_attempts": 5,
   "grade_search_step": 0.2,
@@ -41,16 +65,52 @@
     }
   },
   "waypoints": [
-    { "name": "救援点1", "x": 1.3,  "y": 2.7, "z": 1.2, "rotation": 270,  "gimbal_pitch": -90},
-    { "name": "救援点2", "x": -0.9,  "y": 2.7, "z": 1.2, "rotation": 270 ,  "gimbal_pitch": -90},
-    { "name": "救援点3", "x": -0.9,  "y": -4.4, "z": 1.2, "rotation": 90 ,  "gimbal_pitch": -90},
-    { "name": "救援点4", "x":1.3,  "y":  -4.4, "z": 1.2, "rotation": 90 ,  "gimbal_pitch": -90}
+    {
+      "name": "救援点1",
+      "x": 1.3,
+      "y": 2.7,
+      "z": 1.2,
+      "rotation": 270,
+      "gimbal_pitch": -90
+    },
+    {
+      "name": "救援点2",
+      "x": -1.3,
+      "y": 2.7,
+      "z": 1.2,
+      "rotation": 270,
+      "gimbal_pitch": -90
+    },
+    {
+      "name": "救援点3",
+      "x": 1.6,
+      "y": -4.4,
+      "z": 1.2,
+      "rotation": 90,
+      "gimbal_pitch": -90
+    },
+    {
+      "name": "救援点4",
+      "x": -0.9,
+      "y": -4.4,
+      "z": 1.2,
+      "rotation": 90,
+      "gimbal_pitch": -90
+    }
   ],
   "rescue_points": [
-    { "name": "救援点1" },
-    { "name": "救援点2" },
-    { "name": "救援点3" },
-    { "name": "救援点4" }
+    {
+      "name": "救援点1"
+    },
+    {
+      "name": "救援点2"
+    },
+    {
+      "name": "救援点3"
+    },
+    {
+      "name": "救援点4"
+    }
   ],
   "output": {
     "folder": "output",

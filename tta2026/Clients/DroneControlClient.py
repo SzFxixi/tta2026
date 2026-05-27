@@ -228,3 +228,4 @@ class DroneControlClient:
             print(f"[DroneControlClient] 获取姿态失败: {e}")
             return {"yaw": self.state["yaw"]}
         return ok
+    

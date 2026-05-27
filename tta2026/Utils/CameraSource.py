@@ -44,15 +44,15 @@ class CameraSource:
     @staticmethod
     def _find_ffmpeg() -> str:
         candidates = [
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ffmpeg.exe'),
-            os.path.join(os.getcwd(), 'ffmpeg.exe'),
-            'ffmpeg.exe',
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ffmpeg'),
+            os.path.join(os.getcwd(), 'ffmpeg'),
+            'ffmpeg',
         ]
         for candidate in candidates:
-            if candidate == 'ffmpeg.exe':
+            if candidate == 'ffmpeg':
                 try:
-                    subprocess.run(['ffmpeg.exe', '-version'], capture_output=True, check=True)
-                    return 'ffmpeg.exe'
+                    subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+                    return 'ffmpeg'
                 except Exception:
                     continue
             elif os.path.isfile(candidate):
