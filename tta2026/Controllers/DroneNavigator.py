@@ -47,6 +47,9 @@ class DroneNavigator:
         self.servo_max_attempts = int(config.get('servo_max_attempts', 3))
         self.h_marker_size = float(config.get('h_marker_size', 0.15))
         self.show_camera = bool(config.get('show_camera', False))
+        la = config.get('loading_area', {})
+        self.loading_area = Waypoint('装货区', float(la.get('x', 0)), float(la.get('y', 0)),
+                                      float(la.get('z', 1.5)))
         self.landing_offset = float(config.get('landing_offset', 0.1))
 
         self.h_label = config.get('h_label', 'H')
@@ -426,11 +429,12 @@ class DroneNavigator:
             time.sleep(1.0)
             self._reset_yaw()
 
-        print("[DroneNavigator] 扫描完毕，返回原点 (0, 0, 1.5)...")
-        self.drone.move_to(0.0, 0.0, 1.5)
+        la = self.loading_area
+        print(f"[DroneNavigator] 扫描完毕，前往装货区 ({la.x}, {la.y}, {la.z})...")
+        self.drone.move_to(la.x, la.y, la.z)
 
-        # 归航：检测原点 H，居中后往前微移再降落
-        print("[DroneNavigator] 归航: 检测原点 H 并精确对准...")
+        # 装货区归航：检测 H，居中后往前微移再降落
+        print(f"[DroneNavigator] 装货区归航: 检测 H 并精确对准...")
         self.drone.rotate_gimbal(-90)
         for attempt in range(self.servo_max_attempts):
             frame = self._capture_fresh_frame(settle=4.0 if attempt == 0 else 3.0)
@@ -442,12 +446,12 @@ class DroneNavigator:
             if h_candidate is None:
                 if attempt > 0:
                     ox, oy = self._next_spiral_offset(attempt)
-                    self.drone.move_to(ox, oy, 1.5)
-                print(f"[DroneNavigator] 归航 第{attempt}轮: 未检测到 H")
+                    self.drone.move_to(la.x + ox, la.y + oy, la.z)
+                print(f"[DroneNavigator] 装货区归航 第{attempt}轮: 未检测到 H")
                 continue
 
             self._servo_toward_h(h_candidate['box'], frame.shape)
-            print(f"[DroneNavigator] 归航: 已对准 H，前移 {self.landing_offset}m 后降落")
+            print(f"[DroneNavigator] 装货区: 已对准 H，前移 {self.landing_offset}m 后降落")
             self.drone.move_to(
                 self.drone.state['x'] + self.landing_offset,
                 self.drone.state['y'],
