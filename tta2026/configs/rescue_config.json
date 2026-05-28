@@ -2,6 +2,7 @@
   "camera_source": "rtmp://0.0.0.0:1935/live",
   "listen": true,
   "show_camera": false,
+  "landing_offset": 0.2,
   "camera_ffmpeg_opts": {
     "rtsp_transport": "tcp"
   },
