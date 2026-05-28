@@ -47,6 +47,7 @@ class DroneNavigator:
         self.servo_max_attempts = int(config.get('servo_max_attempts', 3))
         self.h_marker_size = float(config.get('h_marker_size', 0.15))
         self.show_camera = bool(config.get('show_camera', False))
+        self.landing_offset = float(config.get('landing_offset', 0.1))
 
         self.h_label = config.get('h_label', 'H')
         raw_grade_labels = config.get('grade_labels', [])
@@ -119,10 +120,15 @@ class DroneNavigator:
 
     def detect_all(self, frame: Any) -> Dict[str, Any]:
         """一帧同时跑 H 和等级两个模型，返回合并的检测结果。"""
-        h_detection = self.detect_frame(frame, self.h_model)
-        grade_detection = self.detect_frame(frame, self.grade_model)
+        # 亮度修正
+        orig_mean = frame.mean()
+        enhanced = cv2.convertScaleAbs(frame, alpha=1.3, beta=10)
+        print(f"[DroneNavigator] 亮度增强: {orig_mean:.0f} → {enhanced.mean():.0f}")
 
+        h_detection = self.detect_frame(enhanced, self.h_model)
         h_candidate = self.find_best_h(h_detection)
+
+        grade_detection = self.detect_frame(enhanced, self.grade_model)
         grade_info: Dict[str, Any] = {'label': 'unknown', 'confidence': 0.0, 'box': [], 'distance': float('inf')}
         if h_candidate is not None:
             grade_info = self.find_grade_near_h(h_candidate['box'], grade_detection)
@@ -153,7 +159,7 @@ class DroneNavigator:
         dy_px = h_cy - cy   # 正值=H在画面下方
 
         # 像素 → 米换算：已知 H 物理尺寸 / H 像素尺寸
-        if h_pixel_size < 1:
+        if h_pixel_size < 0.5:
             return False
         meters_per_pixel = self.h_marker_size / h_pixel_size
 
@@ -422,7 +428,35 @@ class DroneNavigator:
 
         print("[DroneNavigator] 扫描完毕，返回原点 (0, 0, 1.5)...")
         self.drone.move_to(0.0, 0.0, 1.5)
-        time.sleep(3)
+
+        # 归航：检测原点 H，居中后往前微移再降落
+        print("[DroneNavigator] 归航: 检测原点 H 并精确对准...")
+        self.drone.rotate_gimbal(-90)
+        for attempt in range(self.servo_max_attempts):
+            frame = self._capture_fresh_frame(settle=4.0 if attempt == 0 else 3.0)
+            if frame is None:
+                continue
+
+            all_detections = self.detect_all(frame)
+            h_candidate = all_detections['h_candidate']
+            if h_candidate is None:
+                if attempt > 0:
+                    ox, oy = self._next_spiral_offset(attempt)
+                    self.drone.move_to(ox, oy, 1.5)
+                print(f"[DroneNavigator] 归航 第{attempt}轮: 未检测到 H")
+                continue
+
+            self._servo_toward_h(h_candidate['box'], frame.shape)
+            print(f"[DroneNavigator] 归航: 已对准 H，前移 {self.landing_offset}m 后降落")
+            self.drone.move_to(
+                self.drone.state['x'] + self.landing_offset,
+                self.drone.state['y'],
+                self.drone.state['z'],
+            )
+            break
+
+        self.drone.rotate_gimbal(0)
+        time.sleep(1)
         self._close_preview()
         self.land()
         return results
@@ -431,9 +465,16 @@ class DroneNavigator:
         image = cv2.imread(image_path)
         if image is None:
             raise FileNotFoundError(f'无法读取图像: {image_path}')
-        detection = self.detect_frame(image, self.grade_model)
-        self.annotate_and_save(image, detection, os.path.splitext(os.path.basename(image_path))[0])
-        return detection
+        base = os.path.splitext(os.path.basename(image_path))[0]
+
+        result = self.detect_all(image)
+        combined = {'objects': result['grade_objects'] + result['h_objects']}
+        self.annotate_and_save(image, combined, base)
+
+        raw_label = result['grade_info'].get('label', 'unknown')
+        mapped = self._map_type_to_grade(raw_label)
+        print(f'检测结果: {raw_label} → {mapped}级')
+        return result
 
     def stream_test(self) -> None:
         """实时拉流并显示 H + 等级检测画面，按 Q 退出。不控制无人机。"""
