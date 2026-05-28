@@ -3,6 +3,7 @@
   "listen": true,
   "show_camera": false,
   "landing_offset": 0.2,
+  "loading_area": { "x": -1, "y": 0, "z": 1.5 },
   "camera_ffmpeg_opts": {
     "rtsp_transport": "tcp"
   },
