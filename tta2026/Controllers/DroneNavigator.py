@@ -233,7 +233,10 @@ class DroneNavigator:
         if not self.drone.move_to(waypoint.x, waypoint.y, waypoint.z):
             return {'success': False, 'reason': 'move_failed'}
 
-        self.drone.rotate_gimbal(waypoint.gimbal_pitch)
+        #if not self._rotate_gimbal_with_recovery(waypoint.gimbal_pitch):
+        #   return {'success': False, 'reason': 'gimbal_failed'}
+        # 临时禁用云台控制
+        print(f"[DroneNavigator] 到达 {waypoint.name}（云台控制已禁用，gimbal_pitch={waypoint.gimbal_pitch}°）")
         print(f"[DroneNavigator] 到达 {waypoint.name}，云台={waypoint.gimbal_pitch}°，等稳定后取最新帧...")
 
         for attempt in range(self.servo_max_attempts):
@@ -284,7 +287,8 @@ class DroneNavigator:
                 self._preview(grade_annotated)
                 print(f"[DroneNavigator] {waypoint.name} 居中后: 等级={final_grade.get('label','unknown')}")
 
-            self.drone.rotate_gimbal(0)
+            #if not self._rotate_gimbal_with_recovery(0):
+            #    return {'success': False, 'reason': 'gimbal_failed'}
             return {
                 'success': True,
                 'detection': {'objects': all_detections['h_objects']},
@@ -385,6 +389,13 @@ class DroneNavigator:
         if self.show_camera:
             cv2.destroyAllWindows()
 
+    def _rotate_gimbal_with_recovery(self, pitch: float) -> bool:
+        if self.drone.rotate_gimbal(pitch):
+            return True
+        print("[DroneNavigator] 云台旋转失败，尝试重置 taskId 并重试")
+        self.drone.reset()
+        time.sleep(1)
+        return self.drone.rotate_gimbal(pitch)
 
     def scan_waypoints(self) -> Dict[str, Dict[str, Any]]:
         """执行四点位巡检，返回 {waypoint_name: {grade, confidence, image_path, success}}。"""
@@ -435,7 +446,10 @@ class DroneNavigator:
 
         # 装货区归航：检测 H，居中后往前微移再降落
         print(f"[DroneNavigator] 装货区归航: 检测 H 并精确对准...")
-        self.drone.rotate_gimbal(-90)
+        #if not self._rotate_gimbal_with_recovery(-90):
+        #    print("[DroneNavigator] 装货区归航云台旋转失败，继续尝试后续流程")
+        # 临时禁用云台控制
+        print("[DroneNavigator] 装货区归航（云台控制已禁用）")
         for attempt in range(self.servo_max_attempts):
             frame = self._capture_fresh_frame(settle=4.0 if attempt == 0 else 3.0)
             if frame is None:
@@ -459,7 +473,8 @@ class DroneNavigator:
             )
             break
 
-        self.drone.rotate_gimbal(0)
+        #if not self._rotate_gimbal_with_recovery(0):
+        #    print("[DroneNavigator] 归航结束云台复位失败")
         time.sleep(1)
         self._close_preview()
         self.land()
