@@ -3,7 +3,11 @@
   "listen": true,
   "show_camera": false,
   "landing_offset": 0.2,
-  "loading_area": { "x": -1, "y": 0, "z": 1.5 },
+  "loading_area": {
+    "x": -1,
+    "y": 0,
+    "z": 1.5
+  },
   "camera_ffmpeg_opts": {
     "rtsp_transport": "tcp"
   },
@@ -45,7 +49,7 @@
   "grade_search_attempts": 5,
   "grade_search_step": 0.2,
   "grade_distance_scale": 2.0,
-  "search_max_attempts": 3,
+  "search_max_attempts": 5,
   "search_step": 0.2,
   "drone": {
     "enabled": true,
@@ -86,7 +90,7 @@
     {
       "name": "救援点3",
       "x": 1.6,
-      "y": -4.4,
+      "y": -4.2,
       "z": 1.2,
       "rotation": 90,
       "gimbal_pitch": -90
@@ -94,7 +98,7 @@
     {
       "name": "救援点4",
       "x": -0.9,
-      "y": -4.4,
+      "y": -4.2,
       "z": 1.2,
       "rotation": 90,
       "gimbal_pitch": -90
