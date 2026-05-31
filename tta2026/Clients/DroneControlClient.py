@@ -38,6 +38,9 @@ class DroneControlClient:
         self.threshold_translate = float(threshold_cfg.get("translate", 200))
         self.threshold_rotate = float(threshold_cfg.get("rotate", 200))
 
+        # 控制帧: 'world' 表示命令以全局/world 坐标系为准（默认），'body' 表示以机身坐标系为准
+        self.control_frame = config.get("control_frame", "world")
+
     # ------------------------------------------------------------------
     # 底层通信（HTTP PUT → PlaneServer，指数退避重试 + taskId）
     # ------------------------------------------------------------------
@@ -83,14 +86,22 @@ class DroneControlClient:
         重置 PlaneServer 并返回其当前的 taskId。
         返回 -1 表示同步失败。
         """
-        print("[DroneControlClient] 执行 _sync_task_id: 重置 PlaneServer 并获取最新 taskId")
+        print("[DroneControlClient] 执行 _sync_task_id: 优先查询服务器 taskId，必要时重置")
 
+        # 1) 优先直接查询当前 taskId（避免盲目重置导致状态变化）
+        server_task_id = self._query_server_task_id()
+        if server_task_id is not None:
+            return server_task_id
+
+        # 2) 查询失败 → 作为最后手段重置服务器并重试查询
+        print("[DroneControlClient] 查询失败，尝试重置服务器后再次查询 taskId")
         if not self._reset_server():
             print("[DroneControlClient] Reset 命令失败，无法同步 taskId")
             return -1
 
         server_task_id = self._query_server_task_id()
         if server_task_id is None:
+            print("[DroneControlClient] Reset 后仍无法获取 taskId")
             return -1
 
         return server_task_id
@@ -115,29 +126,44 @@ class DroneControlClient:
                     if not result.get("isSuccess", False):
                         error_message = str(result.get('errorMessage', '')).lower()
                         # 1. 发现 taskId 错误
-                        if ('task' in error_message and 'id' in error_message) or '任务' in error_message:
-                            print("[DroneControlClient] 发现 taskId 错误，尝试同步服务器并重试")
+                        if ('task' in error_message and 'id' in error_message) or '任务' in error_message or 'taskid' in error_message:
+                            print("[DroneControlClient] 发现 taskId 错误，尝试查询服务器并重试")
 
-                            latest_task_id = self._sync_task_id()
-                            if latest_task_id is not None and latest_task_id >= 0:
-                                self.task_id = latest_task_id
+                            # 优先查询服务器当前 taskId（避免盲目 Reset）
+                            server_task_id = self._query_server_task_id()
+
+                            # 如果查询不到，再尝试重置并查询
+                            if server_task_id is None:
+                                server_task_id = self._sync_task_id()
+
+                            if server_task_id is not None and server_task_id >= 0:
+                                self.task_id = server_task_id
                                 print(f"[DroneControlClient] taskId 同步成功，本地taskId更新为 {self.task_id}")
-                                self.task_history.clear()
 
-                                for offset in (0, 1):
+                                # 尝试多个候选 taskId（服务器返回值可能代表上一个已完成的 id）
+                                tried = set()
+                                for offset in (0, 1, 2):
                                     candidate_task_id = self.task_id + offset
+                                    if candidate_task_id in tried:
+                                        continue
+                                    tried.add(candidate_task_id)
                                     payload = dict(original_payload)
                                     payload["taskId"] = candidate_task_id
                                     self.task_history[candidate_task_id] = {"endpoint": endpoint, "payload": dict(payload)}
                                     try:
                                         text = self._do_put_request(endpoint, payload)
                                         print(f"[DroneControlClient] /{endpoint} 重试 taskId={candidate_task_id} → {text}")
-                                        result = json.loads(text)
+                                        try:
+                                            result = json.loads(text)
+                                        except json.JSONDecodeError:
+                                            result = {"isSuccess": True}
                                         if result.get("isSuccess", False):
                                             self.task_id = candidate_task_id
+                                            print(f"[DroneControlClient] 重试成功，taskId 更新为 {self.task_id}")
                                             return True
                                         error_message = str(result.get('errorMessage', '')).lower()
-                                        if ('task' in error_message and 'id' in error_message) or '任务' in error_message:
+                                        if ('task' in error_message and 'id' in error_message) or '任务' in error_message or 'taskid' in error_message:
+                                            # 继续尝试下一个候选 id
                                             continue
                                         print(f"[DroneControlClient] PlaneServer 拒绝: {result.get('errorMessage', 'unknown')}")
                                         return False
@@ -260,8 +286,20 @@ class DroneControlClient:
         if distance < 0.001:
             return True
         
-        yaw_rad = math.radians(self.state["yaw"])
-        relative_x, relative_y = MathHelper.rotate_axis(dx, dy, -yaw_rad)
+        # 根据配置选择控制帧（world 或 body）
+        if getattr(self, 'control_frame', 'body') == 'world':
+            relative_x, relative_y = dx, dy
+            print(f"[DroneControlClient] control_frame=world: 使用世界坐标传递 Translate（不做偏航旋转）")
+            yaw_rad = math.radians(self.state["yaw"])
+        else:
+            yaw_rad = math.radians(self.state["yaw"])
+            relative_x, relative_y = MathHelper.rotate_axis(dx, dy, -yaw_rad)
+            print(f"[DroneControlClient] control_frame=body: 根据偏航旋转到机身坐标系")
+
+        # 调试输出：打印移动计算细节，便于排查坐标系/偏航导致的偏移
+        print(f"[DroneControlClient] move_to 目标=({x:.3f},{y:.3f},{z:.3f}) 当前=({self.state['x']:.3f},{self.state['y']:.3f},{self.state['z']:.3f}) yaw={self.state['yaw']:.1f}°")
+        print(f"[DroneControlClient] 计算 dx,dy,dz=({dx:.3f},{dy:.3f},{dz:.3f}) distance={distance:.3f}")
+        print(f"[DroneControlClient] yaw_rad={yaw_rad:.3f} rad -> relative=({relative_x:.3f},{relative_y:.3f})")
 
         translate_speed = self.speed_translate
         duration_ms = distance / translate_speed * 1000
@@ -270,6 +308,8 @@ class DroneControlClient:
             duration_ms *= 2
 
         speed_x, speed_y, speed_z, _ = MathHelper.standardize(relative_x, relative_y, dz, translate_speed)
+        frame_name = 'world' if getattr(self, 'control_frame', 'world') == 'world' else 'body'
+        print(f"[DroneControlClient] 发送 Translate ({frame_name} frame) 速度=({speed_x:.3f},{speed_y:.3f},{speed_z:.3f}) duration_ms={duration_ms}")
         duration_ms = int(duration_ms)
 
         ok = self._send_command("Translate", {"x": speed_x, "y": speed_y, "z": speed_z, "time": duration_ms})
@@ -323,9 +363,11 @@ class DroneControlClient:
             req = urllib.request.Request(url)
             response = urllib.request.urlopen(req, timeout=10)
             data = json.loads(response.read().decode("utf-8"))
-            yaw = data.get("eulerAngles", {}).get("yaw", 0.0)
-            print(f"[DroneControlClient] 姿态: yaw={yaw:.1f}°")
-            return data
+            yaw = float(data.get("eulerAngles", {}).get("yaw", 0.0))
+            self.state["yaw"] = yaw
+            print(f"[DroneControlClient] 姿态: yaw={yaw:.1f}° (已同步 state)")
+            # 统一返回包含 yaw 的简洁格式，便于上层调用统一读取
+            return {"yaw": yaw}
         except Exception as e:
             print(f"[DroneControlClient] 获取姿态失败: {e}")
             return {"yaw": self.state["yaw"]}
