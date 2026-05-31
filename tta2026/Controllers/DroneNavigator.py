@@ -1,5 +1,6 @@
 import os
 import time
+import math
 from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
@@ -39,6 +40,7 @@ class DroneNavigator:
             listen_fps=config.get('listen_fps', 30),
         )
         self.waypoints = self._load_waypoints(config.get('waypoints', []))
+        self.waypoint_frame = config.get('waypoint_frame', 'world')
         # 搜索参数：在已知大致点位周围做小范围搜索以精确定位目标
         self.search_max_attempts = int(config.get('search_max_attempts', 8))
         self.search_step = float(config.get('search_step', 0.2))
@@ -88,6 +90,20 @@ class DroneNavigator:
             for i, item in enumerate(waypoints_data)
         ]
 
+    def _apply_waypoint_frame(self, yaw: float) -> None:
+        """将 body-frame waypoint 转换为 world-frame waypoint，基于起始朝向。"""
+        if self.waypoint_frame != 'body' or abs(yaw) < 1e-6:
+            return
+        print(f"[DroneNavigator] 基于当前朝向将 body-frame waypoints 转换到 world-frame，base_yaw={yaw:.1f}°")
+        for waypoint in self.waypoints:
+            old_x, old_y = waypoint.x, waypoint.y
+            waypoint.x, waypoint.y = MathHelper.rotate_axis(old_x, old_y, math.radians(yaw))
+            print(f"[DroneNavigator] {waypoint.name}: body=({old_x:.2f},{old_y:.2f}) -> world=({waypoint.x:.2f},{waypoint.y:.2f})")
+        if self.loading_area:
+            old_x, old_y = self.loading_area.x, self.loading_area.y
+            self.loading_area.x, self.loading_area.y = MathHelper.rotate_axis(old_x, old_y, math.radians(yaw))
+            print(f"[DroneNavigator] 装货区: body=({old_x:.2f},{old_y:.2f}) -> world=({self.loading_area.x:.2f},{self.loading_area.y:.2f})")
+
     def takeoff(self) -> bool:
         print('[DroneNavigator] 开始起飞')
         return self.drone.takeoff()
@@ -107,13 +123,19 @@ class DroneNavigator:
         print("[DroneNavigator] 警告: 5 次尝试仍无法获取画面帧")
         return None
 
+    def _normalize_angle(self, angle: float) -> float:
+        """将角度归一化到 [-180, 180) 区间。"""
+        return ((angle + 180) % 360) - 180
+
     def _reset_yaw(self) -> None:
-        """检测无人机当前 yaw，偏离超过 5° 则旋转回 0°。"""
+        """检测无人机当前 yaw，偏离超过 5° 则旋转回 0°，使用最短旋转角度。"""
         posture = self.drone.get_posture()
         current_yaw = float(posture.get("yaw", 0.0))
         if abs(current_yaw) > 3:
-            print(f"[DroneNavigator] 偏航修正: {current_yaw:.1f}° → 0°")
-            self.drone.rotate_yaw(-current_yaw)
+            angle = self._normalize_angle(-current_yaw)
+            print(f"[DroneNavigator] 偏航修正: current_yaw={current_yaw:.1f}°，最短旋转 angle={angle:.1f}° → 0°")
+            if self.drone.rotate_yaw(angle):
+                self.drone.state["yaw"] = 0.0
         else:
             print(f"[DroneNavigator] yaw={current_yaw:.1f}°, 无需修正")
 
@@ -230,7 +252,16 @@ class DroneNavigator:
         单航点扫描：飞到航点 → 找到 H 并居中 → 识别等级 → 不再移动。
         最多 servo_max_attempts 轮。
         """
-        if not self.drone.move_to(waypoint.x, waypoint.y, waypoint.z):
+        # 飞到航点：增加重试与恢复逻辑，遇到失败时尝试 reset 后重试
+        moved = False
+        for mv_try in range(3):
+            if self.drone.move_to(waypoint.x, waypoint.y, waypoint.z):
+                moved = True
+                break
+            print(f"[DroneNavigator] 警告: 到达 {waypoint.name} 移动失败 (尝试 {mv_try+1}/3)，尝试重置飞控并重试")
+            self.drone.reset()
+            time.sleep(1)
+        if not moved:
             return {'success': False, 'reason': 'move_failed'}
 
         #if not self._rotate_gimbal_with_recovery(waypoint.gimbal_pitch):
@@ -411,8 +442,15 @@ class DroneNavigator:
         print("[DroneNavigator] 等待起飞完成 & 状态稳定...")
         time.sleep(8)
 
+        posture = self.drone.get_posture()
+        base_yaw = float(posture.get('yaw', 0.0))
+        print(f"[DroneNavigator] 起始 yaw={base_yaw:.1f}°，waypoint_frame={self.waypoint_frame}")
+        if self.waypoint_frame == 'body':
+            self._apply_waypoint_frame(base_yaw)
+
         for waypoint in self.waypoints:
             print(f"[DroneNavigator] 扫描 {waypoint.name}: ({waypoint.x}, {waypoint.y}, {waypoint.z})")
+            print(f"[DroneNavigator] 当前无人机状态: {self.drone.state}")
             result = self.scan_single_waypoint(waypoint)
 
             if result.get('success'):
