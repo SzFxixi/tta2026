@@ -287,7 +287,7 @@ class DroneControlClient:
             return True
         
         # 根据配置选择控制帧（world 或 body）
-        if getattr(self, 'control_frame', 'body') == 'world':
+        if getattr(self, 'control_frame', 'world') == 'world':
             relative_x, relative_y = dx, dy
             print(f"[DroneControlClient] control_frame=world: 使用世界坐标传递 Translate（不做偏航旋转）")
             yaw_rad = math.radians(self.state["yaw"])
@@ -303,9 +303,9 @@ class DroneControlClient:
 
         translate_speed = self.speed_translate
         duration_ms = distance / translate_speed * 1000
-        while duration_ms < self.threshold_translate:
-            translate_speed /= 2
-            duration_ms *= 2
+        if duration_ms < self.threshold_translate:
+            duration_ms = self.threshold_translate
+            translate_speed = distance / (duration_ms / 1000.0)
 
         speed_x, speed_y, speed_z, _ = MathHelper.standardize(relative_x, relative_y, dz, translate_speed)
         frame_name = 'world' if getattr(self, 'control_frame', 'world') == 'world' else 'body'
@@ -326,14 +326,11 @@ class DroneControlClient:
     # ------------------------------------------------------------------
 
     def rotate_yaw(self, angle: float) -> bool:
-        if abs(angle) <= 1.0:
-            return True
-
         rotate_speed = self.speed_rotate * MathHelper.sign_of(angle)
         duration_ms = abs(angle) / abs(rotate_speed) * 1000
-        while duration_ms < self.threshold_rotate:
-            rotate_speed /= 2
-            duration_ms *= 2
+        if duration_ms < self.threshold_rotate:
+            duration_ms = self.threshold_rotate
+            rotate_speed = angle / (duration_ms / 1000.0)
         duration_ms = int(duration_ms)
 
         ok = self._send_command("Rotate", {"yawRate": rotate_speed, "time": duration_ms})

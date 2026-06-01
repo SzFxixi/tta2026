@@ -128,16 +128,18 @@ class DroneNavigator:
         return ((angle + 180) % 360) - 180
 
     def _reset_yaw(self) -> None:
-        """检测无人机当前 yaw，偏离超过 5° 则旋转回 0°，使用最短旋转角度。"""
+        """检测无人机当前 yaw，偏离超过 3° 则旋转回 0°，使用最短旋转角度。
+        无论是否旋转，都将真实 yaw 同步回 state。"""
         posture = self.drone.get_posture()
         current_yaw = float(posture.get("yaw", 0.0))
-        if abs(current_yaw) > 3:
+        if abs(self._normalize_angle(current_yaw)) > 3:
             angle = self._normalize_angle(-current_yaw)
             print(f"[DroneNavigator] 偏航修正: current_yaw={current_yaw:.1f}°，最短旋转 angle={angle:.1f}° → 0°")
             if self.drone.rotate_yaw(angle):
                 self.drone.state["yaw"] = 0.0
         else:
-            print(f"[DroneNavigator] yaw={current_yaw:.1f}°, 无需修正")
+            self.drone.state["yaw"] = current_yaw
+            print(f"[DroneNavigator] yaw={current_yaw:.1f}°, 无需修正，已同步 state")
 
     # ------------------------------------------------------------------
     # 新搜索算法：单帧双模型 + 视觉伺服 + 螺旋展开
@@ -504,6 +506,7 @@ class DroneNavigator:
 
             self._servo_toward_h(h_candidate['box'], frame.shape)
             print(f"[DroneNavigator] 装货区: 已对准 H，前移 {self.landing_offset}m 后降落")
+            self._reset_yaw()
             self.drone.move_to(
                 self.drone.state['x'] + self.landing_offset,
                 self.drone.state['y'],
