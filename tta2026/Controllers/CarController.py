@@ -31,5 +31,11 @@ class CarController:
             return False
         return self.client.release()
 
+    def wait_for_signal(self, signal_name: str, timeout: float | None = None) -> bool:
+        if self.client is None:
+            print(f"[CarController] 小车未启用，默认继续: wait_for_signal({signal_name})")
+            return True
+        return self.client.wait_for_signal(signal_name, timeout)
+
     def shutdown(self) -> None:
         pass

@@ -10,6 +10,7 @@ from Clients.DroneControlClient import DroneControlClient
 from Entities.Waypoint import Waypoint
 from Utils.CameraSource import CameraSource
 from Utils.JsonHelper import JsonHelper
+from Utils.MathHelper import MathHelper
 
 
 class DroneNavigator:

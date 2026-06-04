@@ -25,3 +25,10 @@ class CarControlClient:
             print("[CarControlClient] 模拟: release()")
             return True
         raise NotImplementedError("释放尚未实现")
+
+    def wait_for_signal(self, signal_name: str, timeout: float | None = None) -> bool:
+        """等待小车发来的信号。实现时只需在这里对接实际通信接口。"""
+        if not self.enabled:
+            print(f"[CarControlClient] 模拟: wait_for_signal({signal_name}, timeout={timeout})")
+            return True
+        raise NotImplementedError("等待小车信号尚未实现")
