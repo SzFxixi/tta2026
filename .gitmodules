@@ -1,0 +1,3 @@
+[submodule "zju-lerobot"]
+	path = zju-lerobot
+	url = https://github.com/Fansh123/zju-lerobot.git
