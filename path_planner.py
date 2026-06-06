@@ -29,12 +29,12 @@ OBSTACLE_MARGIN = 0.4     # 路点/路径段距障碍物的最小安全距离 (�
 
 # 栅格生成
 GRID_EXPAND = 0.228         # 障碍物周围额外生成的偏移路点间距 (米)
-GRID_X_STEP = 0.5         # 在起终点 X 之间均匀插入路点的间距 (米)
-GRID_Y_STEP = 0.5         # 在起终点 Y 之间均匀插入路点的间距 (米)
+GRID_X_STEP = 0.4         # 在起终点 X 之间均匀插入路点的间距 (米)
+GRID_Y_STEP = 0.4         # 在起终点 Y 之间均匀插入路点的间距 (米)
 
 # A* 打分
 COST_DIST_WEIGHT = 1.0    # 路径长度权重
-COST_RISK_WEIGHT = 0   # 靠近障碍物的风险惩罚权重（距离越近惩罚越大）
+COST_RISK_WEIGHT = 0   # 默认走最短路径
 
 # 校正点规划
 CORRECTION_CORRIDOR_WIDTH = 0.3   # 校正点前后左右走廊宽度 (米)，此范围内无障碍物才可校正
@@ -341,30 +341,20 @@ def _is_correction_safe(cx, cy, obstacles, width=CORRECTION_CORRIDOR_WIDTH):
     """
     检查点 (cx,cy) 是否适合做位姿校正。
 
-    校正需要四个方向的 LiDAR 光束都无遮挡：
-      - 前方 (x < cx)：朝向 X=0 的那侧
-      - 后方 (x > cx)：背向 X=0 的那侧
-      - 右侧 (y < cy)：朝向 Y=0 的那侧
-      - 左侧 (y > cy)：背向 Y=0 的那侧
+    校正依赖前后左右四个方向的 LiDAR 光束打到墙上：
+      - 障碍物跟车在同一 Y 行 → 前后光束被挡
+      - 障碍物跟车在同一 X 列 → 左右光束被挡
 
-    每个方向取一个宽度为 width 的走廊，走廊内不能有障碍物。
+    所以障碍物对应的整条 X 列、整条 Y 行都不能校正。
     """
     for obs in obstacles:
         ox, oy = obs['x'], obs['y']
-
-        # 前方走廊：障碍物在车前方 (x < cx) 且横向接近
-        if ox < cx and abs(oy - cy) < width:
+        # 同一 Y 行 → 前后 LiDAR 被挡
+        if abs(oy - cy) < width:
             return False
-        # 后方走廊
-        if ox > cx and abs(oy - cy) < width:
+        # 同一 X 列 → 左右 LiDAR 被挡
+        if abs(ox - cx) < width:
             return False
-        # 右侧走廊
-        if oy < cy and abs(ox - cx) < width:
-            return False
-        # 左侧走廊
-        if oy > cy and abs(ox - cx) < width:
-            return False
-
     return True
 
 

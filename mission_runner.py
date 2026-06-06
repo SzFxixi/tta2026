@@ -54,6 +54,7 @@ CAR_IP = "10.26.36.227"
 CAR_PORT = 5000
 MOVE_TIMEOUT = 30
 STEP_DELAY = 0.5
+NUM_WAYPOINTS = 0                 # 路径中间点个数 (0=自动，不做重采样)
 POS_CORRECTION_THRESHOLD = 0.08   # 坐标校正阈值 (m)，LiDAR 与期望差超过此值则纠正
 MAX_POS_CORRECTION_RETRIES = 3    # 坐标校正最多重试次数
 
@@ -204,7 +205,7 @@ def run_mission_step(point_ids, client):
             continue
 
         # ── 规划路径（绝对坐标） ──
-        result = plan_path(cx, cy, tx, ty, cx, cy)
+        result = plan_path(cx, cy, tx, ty, cx, cy, num_waypoints=NUM_WAYPOINTS)
         waypoints = result["waypoints"]
         correction_points = result.get("correction_points", [])
         cp_indices = {p["index"]: p for p in correction_points}
