@@ -47,10 +47,10 @@ DEFAULT_SAFE_ZONE_X2 = 3.6
 DEFAULT_SAFE_ZONE_Y2 = 7.8
 
 # 房间有效范围（路点坐标不能超出此范围）
-ROOM_X_MIN = 0.1          # X 最小 (m)，前墙边界
-ROOM_Y_MIN = 0.1          # Y 最小 (m)，右墙边界
-ROOM_X_MAX = 4.5          # X 最大 (m)，后墙边界
-ROOM_Y_MAX = 8.8          # Y 最大 (m)，左墙边界
+ROOM_X_MIN = 0.0          # X 最小 (m)，前墙边界
+ROOM_Y_MIN = 0.0          # Y 最小 (m)，右墙边界
+ROOM_X_MAX = 4.6          # X 最大 (m)，后墙边界
+ROOM_Y_MAX = 9.0          # Y 最大 (m)，左墙边界
 
 # 小车定位（与 CarControlServiceFlask 保持一致）
 X_OFFSET = 0.0
