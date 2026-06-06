@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-路径规划微型仿真 — 点击画布放置起点/终点/障碍物/禁行区，实时查看 A* 避障路径。
+Path Planning Simulator — click to place start/goal/obstacles/no-go zones,
+see A* obstacle-avoidance path in real time.
 
-操作:
-  鼠标左键  — 根据当前模式放置物体
-  鼠标右键  — 删除点击处的物体
-  键盘:
-    s — 起点模式      e — 终点模式
-    o — 障碍物模式    z — 禁行区模式（连点两个角画矩形）
-    d — 删除模式      r — 全部重置
-    ↑↓ / 滚轮 — 调整障碍物半径
-  右侧滑块 — 安全边距、栅格扩展、风险权重
+Controls:
+  Left click   — place object in current mode
+  Right click  — delete nearby object
+  Keyboard:
+    b — Begin (start)   e — End (goal)
+    t — obsTacle        x — no-go zone (click two corners)
+    d — Delete          r — Reset all
+    Up/Down / wheel — adjust obstacle radius
+  Right sliders — margin, grid expand, risk weight
 
-依赖: pip install matplotlib numpy
+Dependencies: pip install matplotlib numpy
 """
 
 import math
@@ -23,9 +24,6 @@ matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
 from matplotlib.widgets import Slider
-
-matplotlib.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'DejaVu Sans']
-matplotlib.rcParams['axes.unicode_minus'] = False
 
 ROOM_X, ROOM_Y = (0.0, 4.6), (0.0, 9.0)  # 场地 4.6m × 9m
 
@@ -108,10 +106,29 @@ def _point_safe(px, py, obstacles, no_go_zones, margin):
 
 
 def _segment_safe(ax, ay, bx, by, obstacles, no_go_zones, margin):
-    """线段是否安全（不穿过障碍物安全圆、不穿过禁行区）"""
+    """线段是否安全（不穿过障碍物安全圆、不穿过禁行区、不朝障碍物走）"""
+    dx, dy = bx - ax, by - ay
+    seg_len2 = dx*dx + dy*dy
+    if seg_len2 == 0:
+        return True
+
     for obs in obstacles:
-        if _point_to_segment_dist(obs['x'], obs['y'], ax, ay, bx, by) < margin:
+        ox, oy = obs['x'], obs['y']
+        # 1) 硬距离检查：整段到障碍物的最短距离 >= margin
+        if _point_to_segment_dist(ox, oy, ax, ay, bx, by) < margin:
             return False
+        # 2) 方向检查：不能朝着障碍物走
+        # 将障碍物投影到线段所在的无限直线上
+        t = ((ox - ax) * dx + (oy - ay) * dy) / seg_len2
+        if t > 1.0:
+            # 障碍物在 B 点外侧 → 车在朝障碍物靠近
+            # 检查从 A 到 B 是否显著接近了障碍物
+            dA = math.hypot(ax - ox, ay - oy)
+            dB = math.hypot(bx - ox, by - oy)
+            if dB < dA * 0.85:
+                # 距离缩短超过 15% → 在朝障碍物走，拒绝
+                return False
+
     for z in no_go_zones:
         if _seg_hits_rect(ax, ay, bx, by, z['x1'], z['y1'], z['x2'], z['y2']):
             return False
@@ -222,11 +239,49 @@ def _simplify_waypoints(waypoints):
     return result
 
 
+def _resample_waypoints(waypoints, target_count):
+    """下采样/上采样路径到 target_count 个点"""
+    if target_count < 2 or len(waypoints) < 2:
+        return waypoints
+    if len(waypoints) <= target_count:
+        # 上采样：原有点不够，按段插值增加
+        segs, total = [], 0.0
+        for i in range(len(waypoints) - 1):
+            x1, y1 = waypoints[i]; x2, y2 = waypoints[i+1]
+            L = math.hypot(x2-x1, y2-y1)
+            segs.append((x1, y1, x2, y2, L)); total += L
+        if total == 0:
+            return waypoints
+        result = [waypoints[0]]
+        remaining = target_count - 1
+        for idx, (x1, y1, x2, y2, L) in enumerate(segs):
+            n = remaining if idx == len(segs)-1 else max(1, int(round((target_count-1) * L / total)))
+            remaining -= n
+            for j in range(1, n):
+                t = j / n; result.append((x1+(x2-x1)*t, y1+(y2-y1)*t))
+            if idx < len(segs)-1:
+                result.append((x2, y2))
+        if result[-1] != waypoints[-1]:
+            result.append(waypoints[-1])
+        return result
+    else:
+        # 下采样：均匀取 target_count 个点（包含首尾）
+        result = [waypoints[0]]
+        step = (len(waypoints) - 1) / (target_count - 1)
+        for i in range(1, target_count - 1):
+            idx = int(i * step)
+            result.append(waypoints[idx])
+        result.append(waypoints[-1])
+        return result
+
+
 def plan_path(start, end, obstacles, no_go_zones,
-              margin=0.5, expand=0.2, risk_weight=10.0):
+              margin=0.5, expand=0.2, risk_weight=10.0, num_waypoints=0):
     """核心规划：返回 (waypoints, nodes, safe, min_dist)"""
     if not obstacles and not no_go_zones:
         wp = _simplify_waypoints([start, (end[0], start[1]), end])
+        if num_waypoints > 0:
+            wp = _resample_waypoints(wp, num_waypoints)
         return wp, [], True, float('inf')
 
     nodes = _generate_nodes(start[0], start[1], end[0], end[1],
@@ -236,9 +291,13 @@ def plan_path(start, end, obstacles, no_go_zones,
 
     if raw is None:
         wp = _simplify_waypoints([start, (end[0], start[1]), end])
+        if num_waypoints > 0:
+            wp = _resample_waypoints(wp, num_waypoints)
         return wp, nodes, False, 0.0
 
     wp = _simplify_waypoints(raw)
+    if num_waypoints > 0:
+        wp = _resample_waypoints(wp, num_waypoints)
     min_d = float('inf')
     for i in range(len(wp) - 1):
         for obs in obstacles:
@@ -276,24 +335,28 @@ class Simulator:
         self.margin = 0.5
         self.expand = 0.2
         self.risk_weight = 10.0
+        self.num_waypoints = 0   # 0 = auto (no resample)
 
         self._build()
 
     def _build(self):
         self.fig = plt.figure(figsize=(12, 8))
-        self.fig.canvas.manager.set_window_title('路径规划仿真')
+        self.fig.canvas.manager.set_window_title('Path Planning Simulator')
 
         self.ax = self.fig.add_axes([0.05, 0.18, 0.70, 0.78])
 
         self.slider_margin = Slider(
             self.fig.add_axes([0.80, 0.60, 0.16, 0.03]),
-            '安全边距 (m)', 0.1, 2.0, valinit=0.5)
+            'Margin (m)', 0.1, 2.0, valinit=0.5)
         self.slider_expand = Slider(
             self.fig.add_axes([0.80, 0.50, 0.16, 0.03]),
-            '栅格扩展 (m)', 0.05, 1.0, valinit=0.2)
+            'Expand (m)', 0.05, 1.0, valinit=0.2)
         self.slider_risk = Slider(
             self.fig.add_axes([0.80, 0.40, 0.16, 0.03]),
-            '风险权重', 0.0, 50.0, valinit=10.0)
+            'Risk weight', 0.0, 50.0, valinit=10.0)
+        self.slider_waypoints = Slider(
+            self.fig.add_axes([0.80, 0.30, 0.16, 0.03]),
+            'Waypoints (0=auto)', 0, 20, valinit=0, valstep=1)
 
         self.fig.canvas.mpl_connect('button_press_event', self._on_click)
         self.fig.canvas.mpl_connect('key_press_event', self._on_key)
@@ -302,6 +365,7 @@ class Simulator:
         self.slider_margin.on_changed(self._on_slider)
         self.slider_expand.on_changed(self._on_slider)
         self.slider_risk.on_changed(self._on_slider)
+        self.slider_waypoints.on_changed(self._on_slider)
 
         self._preset()
         self._replan()
@@ -326,7 +390,8 @@ class Simulator:
         planner_obs = [{'x': o['x'], 'y': o['y']} for o in self.obstacles]
         self.waypoints, self.nodes, self.path_safe, self.min_dist = \
             plan_path(self.start, self.end, planner_obs, self.no_go_zones,
-                      self.margin, self.expand, self.risk_weight)
+                      self.margin, self.expand, self.risk_weight,
+                      self.num_waypoints)
 
     # ── 绘制 ──
 
@@ -347,10 +412,10 @@ class Simulator:
         # 房间
         ax.add_patch(Rectangle((0, 0), 4.6, 9.0, fill=False,
                                 edgecolor='#333', linewidth=2))
-        ax.text(2.3, -0.15, '前墙 (X=0)', ha='center', fontsize=8, color='#888')
-        ax.text(2.3, 9.15, '后墙 (X=4.6)', ha='center', fontsize=8, color='#888')
-        ax.text(4.75, 4.5, '左墙 Y=9 ↑', ha='center', fontsize=8, color='#888')
-        ax.text(-0.15, 4.5, '右墙 Y=0 ↓', ha='center', fontsize=8, color='#888')
+        ax.text(2.3, -0.15, 'Front wall (X=0)', ha='center', fontsize=8, color='#888')
+        ax.text(2.3, 9.15, 'Back wall (X=4.6)', ha='center', fontsize=8, color='#888')
+        ax.text(4.75, 4.5, 'Left wall Y=9', ha='center', fontsize=8, color='#888')
+        ax.text(-0.15, 4.5, 'Right wall Y=0', ha='center', fontsize=8, color='#888')
 
         # 禁行区
         for i, z in enumerate(self.no_go_zones):
@@ -361,7 +426,7 @@ class Simulator:
                                     edgecolor='#e65100', linewidth=2,
                                     linestyle='--', zorder=2))
             ax.text((x1 + x2) / 2, (y1 + y2) / 2,
-                    f'禁行#{i+1}', ha='center', va='center',
+                    f'NG#{i+1}', ha='center', va='center',
                     fontsize=8, color='#e65100', fontweight='bold')
 
         # 正在绘制的禁行区（半透明预览）
@@ -410,35 +475,37 @@ class Simulator:
                              head_width=0.06, head_length=0.08,
                              fc=color, ec=color, alpha=0.5, zorder=6)
 
-        # 起点 / 终点
+        # Start / End
         if self.start:
             ax.scatter(*self.start, c='#2e7d32', s=180, marker='o',
                        edgecolors='white', linewidth=2, zorder=10)
-            ax.text(self.start[0] - 0.12, self.start[1] - 0.15, '起点',
+            ax.text(self.start[0] - 0.12, self.start[1] - 0.15, 'Start',
                     fontsize=9, color='#2e7d32', fontweight='bold', ha='right')
         if self.end:
             ax.scatter(*self.end, c='#c62828', s=180, marker='X',
                        edgecolors='white', linewidth=2, zorder=10)
-            ax.text(self.end[0] + 0.12, self.end[1] - 0.15, '终点',
+            ax.text(self.end[0] + 0.12, self.end[1] - 0.15, 'Goal',
                     fontsize=9, color='#c62828', fontweight='bold', ha='left')
 
-        # 标题
-        mode_names = {'start': '起点', 'end': '终点',
-                      'obstacle': '障碍物', 'zone': '禁行区', 'delete': '删除'}
-        info = f"模式: [{self.mode[0].upper()}]{mode_names[self.mode]}"
+        # Title
+        mode_names = {'start': 'Start', 'end': 'Goal',
+                      'obstacle': 'Obstacle', 'zone': 'No-Go', 'delete': 'Delete'}
+        # Mode display: show full key+name
+        mode_keys = {'start': 'B', 'end': 'E', 'obstacle': 'T', 'zone': 'X', 'delete': 'D'}
+        info = f"Mode: [{mode_keys[self.mode]}]{mode_names[self.mode]}"
         if self.mode == 'zone' and self._zone_start:
-            info += f" (已选第一角 {self._zone_start[0]:.2f},{self._zone_start[1]:.2f})"
-        info += f" | 障碍物: {len(self.obstacles)} 个"
-        info += f" | 禁行区: {len(self.no_go_zones)} 个"
+            info += f" (corner1 {self._zone_start[0]:.2f},{self._zone_start[1]:.2f})"
+        info += f" | Obstacles: {len(self.obstacles)}"
+        info += f" | No-Go: {len(self.no_go_zones)}"
         if self.waypoints:
-            safe_str = '✓ 安全' if self.path_safe else '✗ 危险!'
-            info += f" | 路径: {len(self.waypoints)} 点 {safe_str}"
+            safe_str = 'SAFE' if self.path_safe else 'DANGER!'
+            info += f" | Path: {len(self.waypoints)} pts {safe_str}"
             if self.min_dist != float('inf'):
-                info += f" 距障碍物 {self.min_dist:.2f}m"
+                info += f" min_dist={self.min_dist:.2f}m"
         ax.set_title(info, fontsize=9, fontweight='bold', pad=6,
                      color='#333' if self.path_safe else '#c62828')
 
-        help_text = "[s]起点 [e]终点 [o]障碍物 [z]禁行区 [d]删除 [r]重置 滚轮调半径"
+        help_text = "[b]Start [e]Goal [t]Obstacle [x]NoGo [d]Delete [r]Reset wheel=radius | sliders: margin expand risk waypoints"
         ax.text(0.02, 0.01, help_text, transform=ax.transAxes,
                 fontsize=7, color='#aaa', fontfamily='monospace',
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
@@ -498,16 +565,16 @@ class Simulator:
 
     def _on_key(self, event):
         key = event.key.lower() if event.key else ''
-        if key == 's':
+        if key == 'b':
             self.mode = 'start'
             self._zone_start = None
         elif key == 'e':
             self.mode = 'end'
             self._zone_start = None
-        elif key == 'o':
+        elif key == 't':
             self.mode = 'obstacle'
             self._zone_start = None
-        elif key == 'z':
+        elif key == 'x':
             self.mode = 'zone'
             self._zone_start = None
         elif key == 'd':
@@ -536,6 +603,7 @@ class Simulator:
         self.margin = self.slider_margin.val
         self.expand = self.slider_expand.val
         self.risk_weight = self.slider_risk.val
+        self.num_waypoints = int(self.slider_waypoints.val)
         self._replan()
         self._draw()
 
@@ -565,5 +633,14 @@ class Simulator:
 
 
 if __name__ == "__main__":
+    import os as _os
+
+    # WSL2: 如果 DISPLAY 指向不可用的远程 X Server，切到 WSLg (:0)
+    if _os.path.exists('/mnt/wslg/runtime-dir'):
+        _display = _os.environ.get('DISPLAY', '')
+        if not _display or _display.startswith('172.'):
+            _os.environ['DISPLAY'] = ':0'
+            _os.environ['WAYLAND_DISPLAY'] = 'wayland-0'
+
     sim = Simulator()
     plt.show()

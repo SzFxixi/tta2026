@@ -25,16 +25,16 @@ from obstacle_detector import detect_obstacles
 # ============================================================
 
 # 障碍物回避
-OBSTACLE_MARGIN = 0.5     # 路点/路径段距障碍物的最小安全距离 (米)
+OBSTACLE_MARGIN = 0.4     # 路点/路径段距障碍物的最小安全距离 (米)
 
 # 栅格生成
-GRID_EXPAND = 0.2         # 障碍物周围额外生成的偏移路点间距 (米)
+GRID_EXPAND = 0.228         # 障碍物周围额外生成的偏移路点间距 (米)
 GRID_X_STEP = 0.5         # 在起终点 X 之间均匀插入路点的间距 (米)
 GRID_Y_STEP = 0.5         # 在起终点 Y 之间均匀插入路点的间距 (米)
 
 # A* 打分
 COST_DIST_WEIGHT = 1.0    # 路径长度权重
-COST_RISK_WEIGHT = 10.0   # 靠近障碍物的风险惩罚权重（距离越近惩罚越大）
+COST_RISK_WEIGHT = 0   # 靠近障碍物的风险惩罚权重（距离越近惩罚越大）
 
 # 校正点规划
 CORRECTION_CORRIDOR_WIDTH = 0.3   # 校正点前后左右走廊宽度 (米)，此范围内无障碍物才可校正
@@ -51,6 +51,9 @@ ROOM_X_MIN = 0.1          # X 最小 (m)，前墙边界
 ROOM_Y_MIN = 0.1          # Y 最小 (m)，右墙边界
 ROOM_X_MAX = 4.5          # X 最大 (m)，后墙边界
 ROOM_Y_MAX = 8.8          # Y 最大 (m)，左墙边界
+
+
+
 
 # 小车定位（与 CarControlServiceFlask 保持一致）
 X_OFFSET = 0.0

@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
-任务执行器 — 路径规划 → 校正 → 移动 一体化。
+任务执行器 — 路径规划 → 相对移动 → 校正 一体化。
 
-通过命令行选择 step，自动规划避障路径，在可校正点执行位姿校正，
-调用服务器端点逐段移动。
+核心思路:
+  1. path_planner 规划绝对坐标路径 + 校正点
+  2. 相邻路点间的差转为相对位移，通过 /MoveRelative 执行（不依赖绝对定位）
+  3. 在校正点处，用 LiDAR 做角度校正 + 坐标校正
 
 用法（在小车上运行，需 ROS + LiDAR + Flask 服务端）:
     python3 mission_runner.py
 
 依赖:
-    path_planner   — plan_path_to, get_car_position
-    Flask 服务端    — /MoveOnlyX, /MoveOnlyY, /SyncYaw, /SetBaseline, /Reset
+    path_planner   — plan_path, get_car_position
+    Flask 服务端    — /MoveRelative, /SyncYaw, /SetBaseline, /Reset
 """
 
 import sys
 import time
+import math
 import requests
 
 
@@ -23,16 +26,16 @@ import requests
 # ============================================================
 
 POINTS = {
-    1: (None, None),    # 点位 1: (x, y)
-    2: (None, None),    # 点位 2: (x, y)
-    3: (None, None),    # 点位 3: (x, y)
-    4: (None, None),    # 点位 4: (x, y)
-    5: (None, None),    # 点位 5: (x, y)
-    6: (None, None),    # 点位 6: (x, y)
+    1: (None, None),
+    2: (None, None),
+    3: (None, None),
+    4: (None, None),
+    5: (None, None),
+    6: (None, None),
 }
 
 # ============================================================
-#  步骤定义（每个 step 要依次经过的点位 ID）
+#  步骤定义
 # ============================================================
 
 STEPS = {
@@ -47,10 +50,12 @@ STEPS = {
 #  可调参数
 # ============================================================
 
-CAR_IP = "10.26.36.227"     # Flask 服务端 IP
-CAR_PORT = 5000             # Flask 服务端端口
-MOVE_TIMEOUT = 30           # 单次移动超时 (秒)
-STEP_DELAY = 0.5            # 段间等待 (秒)
+CAR_IP = "10.26.36.227"
+CAR_PORT = 5000
+MOVE_TIMEOUT = 30
+STEP_DELAY = 0.5
+POS_CORRECTION_THRESHOLD = 0.08   # 坐标校正阈值 (m)，LiDAR 与期望差超过此值则纠正
+MAX_POS_CORRECTION_RETRIES = 3    # 坐标校正最多重试次数
 
 
 # ============================================================
@@ -58,7 +63,7 @@ STEP_DELAY = 0.5            # 段间等待 (秒)
 # ============================================================
 
 class _CarClient:
-    """Flask 服务端 HTTP 客户端（内部使用）"""
+    """Flask 服务端 HTTP 客户端"""
 
     def __init__(self, ip=CAR_IP, port=CAR_PORT):
         self.base = f"http://{ip}:{port}"
@@ -93,14 +98,10 @@ class _CarClient:
     def sync_yaw(self):
         return self._post("SyncYaw", timeout=20)
 
-    def move_x(self, target_x, ref_y):
-        return self._post("MoveOnlyX", {
-            "location_x": target_x, "location_y": ref_y
-        })
-
-    def move_y(self, target_y, ref_x):
-        return self._post("MoveOnlyY", {
-            "location_x": ref_x, "location_y": target_y
+    def move_relative(self, dx, dy):
+        """相对位移"""
+        return self._post("MoveRelative", {
+            "delta_x": dx, "delta_y": dy
         })
 
 
@@ -109,40 +110,73 @@ class _CarClient:
 # ============================================================
 
 def _move_segment(x1, y1, x2, y2, client):
-    """执行一段纯轴对齐移动"""
-    dx = abs(x2 - x1)
-    dy = abs(y2 - y1)
+    """将绝对路点段转为相对位移并执行"""
+    dx = x2 - x1
+    dy = y2 - y1
 
-    if dx > 0.001 and dy < 0.001:
-        print(f"  → MoveOnlyX: X={x2:.3f} (ref Y={y1:.3f})")
-        return client.move_x(x2, y1)
-    elif dy > 0.001 and dx < 0.001:
-        print(f"  → MoveOnlyY: Y={y2:.3f} (ref X={x1:.3f})")
-        return client.move_y(y2, x1)
-    else:
-        print(f"  ⚠ 段不是纯轴对齐，跳过")
+    if abs(dx) < 0.001 and abs(dy) < 0.001:
         return True, None
 
+    direction = ""
+    if abs(dx) > 0.001 and abs(dy) < 0.001:
+        direction = f"dX={dx:+.3f}"
+    elif abs(dy) > 0.001 and abs(dx) < 0.001:
+        direction = f"dY={dy:+.3f}"
+    else:
+        direction = f"dX={dx:+.3f}, dY={dy:+.3f}"
 
-def _do_correction(client):
-    """执行一次位姿校正"""
-    print("  → 位姿校正 (SyncYaw)...")
+    print(f"  → MoveRelative: {direction}")
+    ok, resp = client.move_relative(dx, dy)
+    return ok, resp
+
+
+def _do_correction(client, expected_x, expected_y):
+    """
+    在校正点执行双重校正:
+      1) 角度校正 (SetBaseline → SyncYaw)
+      2) 坐标校正 (LiDAR vs 期望坐标 → 补相对位移)
+    """
+    from path_planner import get_car_position
+
+    # ── 1) 角度校正 ──
+    print("  → 设定校正基准 (SetBaseline)...")
+    client.set_baseline()
+    print("  → 角度校正 (SyncYaw)...")
     ok, _ = client.sync_yaw()
     if ok:
-        print("  ✓ 校正完成")
+        print("  ✓ 角度校正完成")
     else:
-        print("  ✗ 校正失败")
-    return ok
+        print("  ✗ 角度校正失败")
+
+    # ── 2) 坐标校正 ──
+    for attempt in range(1, MAX_POS_CORRECTION_RETRIES + 1):
+        cx, cy = get_car_position()
+        err_x = expected_x - cx
+        err_y = expected_y - cy
+        err = math.hypot(err_x, err_y)
+
+        print(f"  → 坐标校正 #{attempt}: 期望({expected_x:.3f},{expected_y:.3f}) "
+              f"实际({cx:.3f},{cy:.3f}) 误差{err:.3f}m")
+
+        if err <= POS_CORRECTION_THRESHOLD:
+            print(f"  ✓ 坐标已收敛 (误差 {err:.3f}m <= {POS_CORRECTION_THRESHOLD}m)")
+            break
+
+        # 发一个相对位移纠正当前位置
+        print(f"    补相对位移: ({err_x:+.3f}, {err_y:+.3f})")
+        ok, _ = client.move_relative(err_x, err_y)
+        if not ok:
+            print(f"  ✗ 纠正移动失败")
+            break
+
+        time.sleep(0.3)
+    else:
+        print(f"  ⚠ 达到最大重试次数 ({MAX_POS_CORRECTION_RETRIES})，继续执行")
 
 
 def run_mission_step(point_ids, client):
     """
     执行一个步骤：依次到达 point_ids 中的每个点位。
-
-    对每个目标点：
-      1. 获取当前位置
-      2. 调用 path_planner 规划避障路径（含校正点）
-      3. 沿路径逐段移动，在可校正点执行校正
     """
     from path_planner import plan_path, get_car_position
 
@@ -169,11 +203,11 @@ def run_mission_step(point_ids, client):
             print(f"  已在目标点，跳过")
             continue
 
-        # ── 规划路径 ──
+        # ── 规划路径（绝对坐标） ──
         result = plan_path(cx, cy, tx, ty, cx, cy)
         waypoints = result["waypoints"]
         correction_points = result.get("correction_points", [])
-        cp_indices = {p["index"] for p in correction_points}
+        cp_indices = {p["index"]: p for p in correction_points}
 
         print(f"  路径: {result['path_name']}, "
               f"距障碍物 {result['obstacle_margin']}m, "
@@ -185,14 +219,16 @@ def run_mission_step(point_ids, client):
             x1, y1 = waypoints[i]
             x2, y2 = waypoints[i + 1]
 
-            # 当前点如果是校正点 → 先校正再走
+            # 当前点是校正点 → 先校正再走
             if i in cp_indices:
-                cpi = next(p for p in correction_points if p["index"] == i)
-                if cpi["safe"]:
-                    _do_correction(client)
+                cp = cp_indices[i]
+                if cp["safe"]:
+                    print(f"\n  ● 校正点 #{i} ({x1:.3f}, {y1:.3f}) type={cp['type']}")
+                    _do_correction(client, x1, y1)
                 else:
-                    print(f"  - 校正点#{i} 有遮挡，跳过校正")
+                    print(f"\n  - 校正点 #{i} 有遮挡，跳过校正")
 
+            # 相对位移：Δ = 下一路点 - 当前路点
             ok, resp = _move_segment(x1, y1, x2, y2, client)
             if not ok:
                 print(f"  ✗ 移动失败: {resp.get('errorMessage', resp.get('error', '未知'))}")
@@ -200,8 +236,8 @@ def run_mission_step(point_ids, client):
             time.sleep(STEP_DELAY)
 
         # 到达目标点 → 校正
-        print(f"  ✓ 到达点位 {pid}")
-        _do_correction(client)
+        print(f"\n  ✓ 到达点位 {pid}")
+        _do_correction(client, tx, ty)
 
     return True
 
