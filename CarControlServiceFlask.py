@@ -13,9 +13,6 @@ import signal
 import os
 import math
 
-lidarx = 0
-lidary = 0
-
 def getx():
     data = rospy.wait_for_message("scan", LaserScan)
     number = len(data.ranges)
@@ -41,7 +38,6 @@ def gety():
     return lidary
 
 def getsum():
-    start_time=time.time()
     lidar_x_average = 0
     lidar_x__average = 0
     for i in range(5):
@@ -60,16 +56,7 @@ def getsum():
         lidar_x__average += lidarx_
     lidar_x_average /= 5
     lidar_x__average /= 5
-
-    end_time=time.time()
     return lidar_x__average + lidar_x_average
-
-def adjust_angle():
-    s = getsum()
-    theat = (-1)*np.arccos(9.0/s)
-    cmd = f"chassis move x 0 y 0 z {theat};"
-    car.Move(cmd)
-    print('[OK]')
 
 def signal_handler(sig, frame):
     print('收到终止信号，正在关闭资源...')
@@ -97,18 +84,15 @@ class CarService:
         self.y_offset = y_offset
 
     def StartUp(self):
-        print("Startup")
         self.channel.connect(self.address)
-
         self.channel.send("command;".encode('utf-8'))
         self.channel.recv(1024).decode('utf-8').split(' ')
         self.channel.settimeout(3)
-        print("connect")
         rospy.init_node("lidar_data")
-        data = rospy.wait_for_message("scan", LaserScan)
+        rospy.wait_for_message("scan", LaserScan)
         self.distance = getsum()
         self.initialYaw = self.getYaw()
-        print("GOGOGO")
+        print("CarService ready")
 
     def Shutdown(self):
         self.channel.shutdown(socket.SHUT_WR)
@@ -148,7 +132,6 @@ class CarService:
         """保存当前前后距离和以及偏航角，作为后续纠偏的基准"""
         self.distance = getsum()
         self.initialYaw = self.getYaw()
-        print(f"[Baseline] 更新基准距离: {self.distance:.3f}，偏航: {self.initialYaw:.1f}°")
 
     def SyncYaw(self):
         for iteration in range(10):
@@ -159,37 +142,27 @@ class CarService:
                 theat = self.return_theat()
                 if yaw > 90:
                     yaw = yaw - 180
-                if theat > 4 and abs(self.initialYaw - yaw) > 3 or theat > 6:
+                if theat > 15:
                     if yaw - self.initialYaw > 0:
                         theat = theat * (-1)
-
                     step = max(2.5, min(abs(theat), 10.0)) * (theat / abs(theat))
                     self.channel.send(f"chassis move z {step};".encode('utf-8'))
-                    print(f"SYNCYAW #{iteration+1}! theat:{theat:.1f}° step:{step:.1f}° yaw:{yaw:.1f}°")
                     time.sleep(0.5)
                     try:
                         self.channel.recv(1024)
                     except Exception:
                         pass
-                    # 不 break，继续循环直到收敛
                 else:
-                    print(f"SYNCYAW converged! theat:{theat:.1f}° yaw:{yaw:.1f}°")
                     break
             except Exception:
                 pass
-        else:
-            print("SYNCYAW max iterations (10) reached")
 
     def return_theat(self):
         s = getsum()
         t = self.distance / s
-
         if t > 1:
             t = 1
-        theat = np.arccos(t)*180/3.1415926
-
-        print(f"theat = {theat}")
-        return theat
+        return np.arccos(t) * 180 / 3.1415926
 
 
 if __name__ == "__main__":
@@ -197,7 +170,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
 
     app = Flask(__name__)
-    car = CarService("192.168.42.2", 40923, 0.39, 0.39)
+    car = CarService("192.168.42.2", 40923, 0, 0)
     car.StartUp()
     target_pub = rospy.Publisher("/target", Pose2D, queue_size=5)
     CurrentTaskID = 0

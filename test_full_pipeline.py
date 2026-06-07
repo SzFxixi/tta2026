@@ -147,16 +147,13 @@ def main():
     input("\n>>> 基准已设定，按 Enter 继续检测障碍物...")
 
     # 障碍物检测
-    safe_p1 = (0.0, 0.0)
-    safe_p2 = (0.0, 0.0)   # 空安全区 = 取消
-
     print(f"\n[3] 检测障碍物...")
-    print(f"  安全区: ({safe_p1[0]:.1f}, {safe_p1[1]:.1f}) → ({safe_p2[0]:.1f}, {safe_p2[1]:.1f})")
-
-    obstacles, diag = detect_obstacles(safe_p1, safe_p2, cx, cy)
+    obstacles, diag = detect_obstacles(cx, cy)
+    filtered = diag.get('filtered_out', 0)
     print(f"  雷达诊断: 有效 {diag['valid_beams']}/{diag['total_beams']} 光束, "
           f"突变 {diag['jump_count']} 点, "
-          f"距离范围 {diag['dist_min']}~{diag['dist_max']}m")
+          f"距离范围 {diag['dist_min']}~{diag['dist_max']}m"
+          + (f", 过滤越界 {filtered} 个" if filtered else ""))
 
     if obstacles:
         print(f"\n  检测到 {len(obstacles)} 个障碍物:")
@@ -167,6 +164,11 @@ def main():
     else:
         print(f"\n  未检测到障碍物 ✓")
 
+    # 禁区设置
+    from path_planner import plan_path, setup_forbidden_zones
+    forbidden_zones = setup_forbidden_zones()
+    origin_x, origin_y = cx, cy
+
     # ────────────────────────────────────────────────
     #  阶段二：路径规划
     # ────────────────────────────────────────────────
@@ -174,10 +176,10 @@ def main():
     print("  阶段二：路径规划")
     print("=" * 60)
 
-    from path_planner import plan_path
-
     print(f"\n[4] 规划路径: ({cx:.3f}, {cy:.3f}) → ({tx:.2f}, {ty:.2f})")
-    result = plan_path(cx, cy, tx, ty, cx, cy)
+    result = plan_path(cx, cy, tx, ty, cx, cy,
+                       forbidden_zones=forbidden_zones,
+                       origin_x=origin_x, origin_y=origin_y)
 
     wp = result["waypoints"]
     cp = result.get("correction_points", [])

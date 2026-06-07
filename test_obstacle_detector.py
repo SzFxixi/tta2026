@@ -3,12 +3,7 @@
 障碍物检测独立测试脚本
 
 用法（在小车上运行）:
-    python3 test_obstacle_detector.py <x1> <y1> <x2> <y2>
-
-示例 — 安全区矩形对角两点:
-    python3 test_obstacle_detector.py 0.5 0.5 3.0 6.0
-
-不传参数时使用默认安全区。
+    python3 test_obstacle_detector.py
 """
 
 import sys
@@ -50,32 +45,14 @@ def main():
     print("等待 LiDAR 数据...")
     rospy.wait_for_message("scan", LaserScan, timeout=10.0)
 
-    # 获取小车当前位置（减去偏移量）
     car_x = getx()
     car_y = gety()
 
-    # 安全区参数
-    if len(sys.argv) >= 5:
-        x1, y1 = float(sys.argv[1]), float(sys.argv[2])
-        x2, y2 = float(sys.argv[3]), float(sys.argv[4])
-    else:
-        # 默认安全区：X [0.5, 3.6]  Y [0.5, 7.8]
-        x1, y1 = 0.5, 0.5
-        x2, y2 = 3.6, 7.8
-
-    safe_zone = ((x1, y1), (x2, y2))
-
     print("=" * 60)
     print(f"小车位置: X={car_x:.3f}  Y={car_y:.3f}")
-    print(f"安全区:    ({x1:.1f}, {y1:.1f}) → ({x2:.1f}, {y2:.1f})")
     print("=" * 60)
 
-    obstacles, diag = detect_obstacles(
-        safe_zone_p1=safe_zone[0],
-        safe_zone_p2=safe_zone[1],
-        car_x=car_x,
-        car_y=car_y,
-    )
+    obstacles, diag = detect_obstacles(car_x=car_x, car_y=car_y)
 
     # ── 打印诊断 ──
     print(f"\n雷达诊断:")

@@ -121,17 +121,11 @@ class PoseCorrector:
         self._sock.send("command;".encode("utf-8"))
         self._sock.recv(1024)
         self._sock.settimeout(CHASSIS_SOCKET_TIMEOUT)
-        print(f"[PoseCorrector] 已连接底盘 {self._ip}:{self._port}")
-
-        # 确保 ROS 节点已初始化（可能已被外部 init，这里做幂等处理）
         try:
             rospy.init_node("pose_corrector", anonymous=True)
         except rospy.ROSException:
-            pass  # 已初始化
-
-        # 等一帧 LiDAR 确认 /scan 通
+            pass
         rospy.wait_for_message("scan", LaserScan, timeout=5.0)
-        print("[PoseCorrector] LiDAR 就绪")
 
     def disconnect(self):
         """关闭底盘连接"""
@@ -142,7 +136,6 @@ class PoseCorrector:
                 pass
             self._sock.close()
             self._sock = None
-        print("[PoseCorrector] 已断开")
 
     # ── 底盘通信底层 ──
 
@@ -189,18 +182,9 @@ class PoseCorrector:
     # ════════════════════════════════════════════════════════
 
     def set_baseline(self):
-        """
-        在当前位置记录基准状态。
-
-        基准包含两项：
-          - baseline_distance: 前后墙距离和（LiDAR 测得，用于计算车身偏角）
-          - baseline_yaw:      底盘当前偏航角（用于双重确认漂移）
-        """
+        """记录基准：前后墙距离和 + 底盘偏航角"""
         self.baseline_distance = getsum()
         self.baseline_yaw = self._get_yaw()
-        print(f"[PoseCorrector] 基准已设定: "
-              f"距离和={self.baseline_distance:.3f}m, "
-              f"偏航角={self.baseline_yaw:.1f}°")
 
     # ════════════════════════════════════════════════════════
     #  功能二：检测偏角
@@ -229,28 +213,14 @@ class PoseCorrector:
         return angle
 
     def get_deviation(self) -> float:
-        """
-        检测当前车身相对基准的偏角。
-
-        返回:
-            float: 偏角 (度)。如果基准未设定则返回 -1。
-        """
+        """检测当前车身相对基准的偏角。返回偏角(度)，基准未设定返回 -1。"""
         if self.baseline_distance == 0.0:
-            print("[PoseCorrector] 请先调用 set_baseline()")
             return -1.0
-
         lidar_angle = self._compute_lidar_angle()
         current_yaw = self._get_yaw()
         yaw_drift = abs(current_yaw - self.baseline_yaw)
-
-        # 规范化 yaw（底盘 yaw 范围可能是 [0, 360] 或 [-180, 180]）
         if yaw_drift > 180:
             yaw_drift = 360 - yaw_drift
-
-        print(f"[PoseCorrector] LiDAR偏角={lidar_angle:.1f}°, "
-              f"底盘yaw={current_yaw:.1f}° (漂移={yaw_drift:.1f}°) "
-              f"基准yaw={self.baseline_yaw:.1f}°")
-
         return lidar_angle
 
     # ════════════════════════════════════════════════════════
@@ -258,57 +228,31 @@ class PoseCorrector:
     # ════════════════════════════════════════════════════════
 
     def correct_if_needed(self) -> bool:
-        """
-        检测偏角是否超过阈值，超过则执行逐步校正，直到偏角回到阈值内。
-
-        校正判定（已修复运算符优先级，显式加括号）:
-            IF  LiDAR偏角 > LARGE阈值(6°)
-            OR (LiDAR偏角 > SMALL阈值(4°) AND 底盘yaw漂移 > 3°)
-            → 执行一步 2.5° 旋转，重新测量，循环
-
-        返回:
-            bool: True=执行了校正, False=无需校正
-        """
+        """检测偏角是否超过阈值，超过则逐步校正直到收敛。返回 True=执行了校正。"""
         if self.baseline_distance == 0.0:
-            print("[PoseCorrector] 请先调用 set_baseline()")
             return False
 
         corrected = False
-
         for iteration in range(1, MAX_ITERATIONS + 1):
             lidar_angle = self._compute_lidar_angle()
             current_yaw = self._get_yaw()
 
-            # 规范化 yaw 漂移
             if current_yaw > 90:
                 current_yaw -= 180
             yaw_drift = abs(current_yaw - self.baseline_yaw)
             if yaw_drift > 180:
                 yaw_drift = 360 - yaw_drift
 
-            # ── 判定是否需要校正 ──
             need_correct_large = lidar_angle > DEVIATION_LARGE
             need_correct_small = (lidar_angle > DEVIATION_SMALL
                                   and yaw_drift > YAW_DRIFT_THRESHOLD)
-
             if not (need_correct_large or need_correct_small):
-                print(f"[PoseCorrector] 无需校正: "
-                      f"LiDAR偏角={lidar_angle:.1f}°, yaw漂移={yaw_drift:.1f}°")
                 break
 
-            # ── 执行一步校正 ──
-            # 方向：底盘 yaw 偏大 → 反向转
             direction = -1.0 if (current_yaw - self.baseline_yaw) > 0 else 1.0
             step = CORRECTION_STEP * direction
-
-            print(f"[PoseCorrector] 校正 #{iteration}: "
-                  f"LiDAR偏角={lidar_angle:.1f}°, yaw漂移={yaw_drift:.1f}° → 旋转 {step:+.1f}°")
-
             self._send_chassis(f"chassis move z {step}")
             corrected = True
             time.sleep(CORRECTION_SLEEP)
-
-        else:
-            print(f"[PoseCorrector] 达到最大迭代次数 {MAX_ITERATIONS}，校正终止")
 
         return corrected

@@ -2,8 +2,6 @@ import requests
 import json
 import time
 from typing import Optional, Tuple, Dict, Any, List
-import paramiko
-from scp import SCPClient
 class CarController:
     
     def __init__(self, ip: str = "10.203.94.227", port: int = 5000):
@@ -34,17 +32,11 @@ class CarController:
                     
 
                     if result.get("isSuccess"):
-                        print(f"Task {task_id} succeeded after {attempts+1} retries")
                         return True, result
-                    
-                except (requests.RequestException, json.JSONDecodeError) as e:
-                    print(f"Retry attempt {attempts+1} for task {task_id} failed: {str(e)}")
-            
-
+                except (requests.RequestException, json.JSONDecodeError):
+                    pass
             time.sleep(0.1)
             attempts += 1
-        
-        print(f"Failed after 5 retries for task {task_id}")
         return False, None
 
     def _send_command(self, endpoint: str, payload: dict) -> Tuple[bool, Optional[dict]]:
@@ -71,45 +63,26 @@ class CarController:
             
 
             if not result.get("isSuccess") and "expectedTaskId" in result:
-            
                 expected_id = result["expectedTaskId"]
-                print(f"Task ID mismatch! Expected {expected_id}, got {new_task_id}")
-                
-
                 self.current_task_id = expected_id
-                
-
                 self._handle_missing_tasks()
-                
-
-                print(f"Retrying task with corrected ID {expected_id}")
                 return self._send_command(endpoint, payload)
             self.current_task_id += 1
 
             return result.get("isSuccess", False), result
         
-        except (requests.RequestException, json.JSONDecodeError) as e:
-            print(f"Initial command to {endpoint} failed: {str(e)}")
-
+        except (requests.RequestException, json.JSONDecodeError):
             return self._retry_until_success(new_task_id)
     
     def _handle_missing_tasks(self):
-
         expected_id = self.current_task_id
-        
         while True:
-
             if expected_id in self.task_history:
                 endpoint, payload = self.task_history[expected_id]
-                print(f"Re-executing missing task {expected_id}: {endpoint}")
-                
-
                 success, _ = self._send_command(endpoint, payload)
-                
                 if success:
-                    expected_id += 1  
+                    expected_id += 1
             else:
-                print(f"Task {expected_id} not found in history, sync completed")
                 break
 
     def Circle(self,rad_z:float) -> bool:

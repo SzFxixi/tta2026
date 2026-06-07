@@ -30,6 +30,12 @@ CLUSTER_MIN_BEAMS = 5          # 最少连续光束数，少于此数视为噪�
 CLUSTER_MAX_GAP = 10            # 同一簇内允许的最大光束索引间隔
 CROSS_ZERO_MERGE_MARGIN = 5    # 簇触及 0° 两侧 margin 光束内时尝试跨 0° 合并
 
+# 房间有效范围（超出此范围的障碍物视为噪声丢弃）
+ROOM_X_MIN = 0.2
+ROOM_X_MAX = 4.7
+ROOM_Y_MIN = 0.2
+ROOM_Y_MAX = 8.8
+
 
 # ============================================================
 #  工具函数
@@ -40,13 +46,12 @@ def point_in_rect(px, py, xmin, xmax, ymin, ymax):
     return xmin <= px <= xmax and ymin <= py <= ymax
 
 
-def _compute_diag(n_beams, valid_count, inside_count, jump_count, all_dists):
+def _compute_diag(n_beams, valid_count, jump_count, all_dists):
     """组装诊断字典"""
     n = len(all_dists)
     return {
         "total_beams": n_beams,
         "valid_beams": valid_count,
-        "inside_zone_beams": inside_count,
         "jump_count": jump_count,
         "dist_min":   round(all_dists[0], 3) if n else 0,
         "dist_p10":   round(all_dists[n // 10], 3) if n > 10 else 0,
@@ -60,21 +65,13 @@ def _compute_diag(n_beams, valid_count, inside_count, jump_count, all_dists):
 #  第一步：逐束分析
 # ============================================================
 
-def _analyze_beams(data, car_x, car_y, safe_zone):
-    """
-    遍历所有激光光束，标记有效性、命中点坐标、是否在安全区内。
-
-    返回:
-        hit_dist, hit_angles, valid_mask, hit_inside, n_beams, valid_count, inside_count
-    """
-    sz_xmin, sz_xmax = safe_zone["xmin"], safe_zone["xmax"]
-    sz_ymin, sz_ymax = safe_zone["ymin"], safe_zone["ymax"]
-
+def _analyze_beams(data, car_x, car_y):
+    """遍历所有激光光束，标记有效性和命中点坐标。"""
     n_beams = len(data.ranges)
     angle_min = data.angle_min
     angle_inc = data.angle_increment
 
-    hit_dist, hit_angles, valid_mask, hit_inside = [], [], [], []
+    hit_dist, hit_angles, valid_mask = [], [], []
 
     for i in range(n_beams):
         d = data.ranges[i]
@@ -82,20 +79,14 @@ def _analyze_beams(data, car_x, car_y, safe_zone):
             valid_mask.append(False)
             hit_dist.append(None)
             hit_angles.append(None)
-            hit_inside.append(None)
             continue
         valid_mask.append(True)
         hit_dist.append(d)
         angle = angle_min + i * angle_inc
         hit_angles.append(angle)
-        hx = car_x - d * math.cos(angle)   # 前方 = 靠近前墙 = X 减小
-        hy = car_y + d * math.sin(angle)   # 左侧 = 远离右墙 = Y 增大
-        hit_inside.append(point_in_rect(hx, hy, sz_xmin, sz_xmax, sz_ymin, sz_ymax))
 
     valid_count = sum(valid_mask)
-    inside_count = sum(1 for i in range(n_beams) if valid_mask[i] and hit_inside[i])
-
-    return hit_dist, hit_angles, valid_mask, hit_inside, n_beams, valid_count, inside_count
+    return hit_dist, hit_angles, valid_mask, n_beams, valid_count
 
 
 # ============================================================
@@ -240,62 +231,55 @@ def _compute_obstacles(clusters, hit_dist, hit_angles, car_x, car_y, n_beams):
 
 
 # ============================================================
+#  房间边界过滤
+# ============================================================
+
+def _filter_out_of_bounds(obstacles):
+    """过滤坐标超出房间有效范围的障碍物（视为噪声）。"""
+    kept = []
+    dropped = 0
+    for obs in obstacles:
+        if ROOM_X_MIN <= obs['x'] <= ROOM_X_MAX and ROOM_Y_MIN <= obs['y'] <= ROOM_Y_MAX:
+            kept.append(obs)
+        else:
+            dropped += 1
+    return kept, dropped
+
+
+# ============================================================
 #  主入口
 # ============================================================
 
-def detect_obstacles(safe_zone_p1, safe_zone_p2,
-                     car_x, car_y,
+def detect_obstacles(car_x, car_y,
                      jump_threshold=JUMP_THRESHOLD,
                      cluster_min_beams=CLUSTER_MIN_BEAMS):
-    """
-    通过 LiDAR 距离突变检测安全区外的障碍物。
-
-    参数:
-        safe_zone_p1, safe_zone_p2: 安全区对角线两点 (x, y)
-        car_x, car_y:              小车当前位置（已减偏移量）
-        jump_threshold:            突变阈值（米）
-        cluster_min_beams:         最少连续光束数
-
-    返回:
-        (obstacles, diagnostics)
-    """
+    """通过 LiDAR 距离突变检测障碍物。返回 (obstacles, diagnostics)。"""
     data = rospy.wait_for_message("scan", LaserScan, timeout=LIDAR_TIMEOUT)
 
-    safe_zone = {
-        "xmin": min(safe_zone_p1[0], safe_zone_p2[0]),
-        "xmax": max(safe_zone_p1[0], safe_zone_p2[0]),
-        "ymin": min(safe_zone_p1[1], safe_zone_p2[1]),
-        "ymax": max(safe_zone_p1[1], safe_zone_p2[1]),
-    }
-
-    # 第一步：逐束分析
-    hit_dist, hit_angles, valid_mask, hit_inside, \
-        n_beams, valid_count, inside_count = \
-        _analyze_beams(data, car_x, car_y, safe_zone)
+    hit_dist, hit_angles, valid_mask, n_beams, valid_count = \
+        _analyze_beams(data, car_x, car_y)
 
     if valid_count == 0:
         return [], {"total_beams": n_beams, "valid_beams": 0}
 
-    # 第二步：突变检测
     jump_indices = _detect_jumps(hit_dist, valid_mask, n_beams, jump_threshold)
 
     all_dists = sorted([hit_dist[i] for i in range(n_beams) if valid_mask[i]])
-    diag = _compute_diag(n_beams, valid_count, inside_count, len(jump_indices), all_dists)
+    diag = _compute_diag(n_beams, valid_count, len(jump_indices), all_dists)
 
     if len(jump_indices) < 2:
         return [], diag
 
-    # 第三步：种子扩展
     obstacle_beam = _expand_obstacle_beams(
         hit_dist, valid_mask, n_beams, jump_indices, jump_threshold)
 
-    # 第四步：聚类
     clusters = _cluster_beams(obstacle_beam, n_beams, cluster_min_beams)
     if not clusters:
         return [], diag
 
-    # 第五步：计算坐标
     obstacles = _compute_obstacles(clusters, hit_dist, hit_angles, car_x, car_y, n_beams)
+    obstacles, dropped = _filter_out_of_bounds(obstacles)
+    diag['filtered_out'] = dropped
     return obstacles, diag
 
 
@@ -304,4 +288,4 @@ if __name__ == "__main__":
     import sys
     rospy.init_node("obs_test", anonymous=True)
     rospy.wait_for_message("scan", LaserScan, timeout=10.0)
-    print("障碍物检测模块就绪。请通过 /DetectObstacles 端点调用。")
+    print("障碍物检测模块就绪")
