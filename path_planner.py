@@ -459,7 +459,7 @@ def plan_path(start_x, start_y, end_x, end_y,
         end_x, end_y:       终点坐标
         car_x, car_y:       小车位置（给障碍物检测用）
         safe_zone_p1, p2:   安全区
-        num_waypoints:      期望输出点数（0 = 自动）
+        num_waypoints:      期望输出点数（0 = 自动，按曼哈顿距离每米1个点）
         jump_threshold:     传给 detect_obstacles
         cluster_min_beams:  传给 detect_obstacles
 
@@ -491,12 +491,16 @@ def plan_path(start_x, start_y, end_x, end_y,
     sx, sy = start_x, start_y
     ex, ey = end_x, end_y
 
+    # 自动计算路点密度：曼哈顿距离每米一个点
+    if num_waypoints <= 0:
+        manhattan = abs(ex - sx) + abs(ey - sy)
+        num_waypoints = max(2, math.ceil(manhattan))
+
     # 无障碍物 → 直接先X后Y
     if not obstacles:
         wp = [(sx, sy), (ex, sy), (ex, ey)]
         wp = _simplify_waypoints(wp)
-        if num_waypoints > 0:
-            wp = _resample_waypoints(wp, num_waypoints)
+        wp = _resample_waypoints(wp, num_waypoints)
         return {
             "path_name": "直接路径(无障碍)",
             "obstacle_margin": float('inf'),
@@ -516,8 +520,7 @@ def plan_path(start_x, start_y, end_x, end_y,
         wp = [(sx, sy), (ex, sy), (ex, ey)]
         margin = _path_min_dist_to_obstacles(wp, obstacles)
         wp = _simplify_waypoints(wp)
-        if num_waypoints > 0:
-            wp = _resample_waypoints(wp, num_waypoints)
+        wp = _resample_waypoints(wp, num_waypoints)
         return {
             "path_name": "先X后Y(安全无解)",
             "obstacle_margin": round(margin, 3),
@@ -529,8 +532,7 @@ def plan_path(start_x, start_y, end_x, end_y,
 
     # 平滑
     wp = _simplify_waypoints(raw_path)
-    if num_waypoints > 0:
-        wp = _resample_waypoints(wp, num_waypoints)
+    wp = _resample_waypoints(wp, num_waypoints)
 
     margin = _path_min_dist_to_obstacles(wp, obstacles)
     score = _score_path(wp, obstacles)
