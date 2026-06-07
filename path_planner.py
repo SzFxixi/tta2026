@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""
-路径规划模块 — 基于 A* 思想的避障路径规划。
-
-在检测到的障碍物周围生成候选路点，构建轴对齐图（相邻点仅 X 或 Y 变化），
-用 A* 搜索最优路径，通过打分函数平衡路径长度与障碍物距离。
-
-依赖:
-    obstacle_detector   — detect_obstacles()
-
-可独立测试（需 ROS + LiDAR）:
-    python3 path_planner.py <target_x> <target_y> [num_waypoints]
-"""
+# 基于 A* 的避障路径规划，依赖 obstacle_detector 和 forbidden_zones
 
 import math
 import heapq
@@ -25,32 +14,18 @@ from forbidden_zones import point_in_forbidden, segment_crosses_forbidden
 #  可调参数
 # ============================================================
 
-# 障碍物回避
-OBSTACLE_MARGIN = 0.3     # 路点/路径段距障碍物的最小安全距离 (米)
-
-# 栅格生成
-GRID_EXPAND = 0.228         # 障碍物周围额外生成的偏移路点间距 (米)
-GRID_X_STEP = 0.4         # 在起终点 X 之间均匀插入路点的间距 (米)
-GRID_Y_STEP = 0.4         # 在起终点 Y 之间均匀插入路点的间距 (米)
-
-# A* 打分
-COST_DIST_WEIGHT = 1.0    # 路径长度权重
-COST_RISK_WEIGHT = 0   # 默认走最短路径？？？
-
-# 校正点规划
-CORRECTION_CORRIDOR_WIDTH = 0.3   # 校正点前后左右走廊宽度 (米)，此范围内无障碍物才可校正
-CORRECTION_MIN_INTERVAL = 1.0     # 相邻校正点最小间距 (米)，避免过于密集
-
-# 房间有效范围（路点坐标不能超出此范围）
-ROOM_X_MIN = 0.1          # X 最小 (m)，前墙边界
-ROOM_Y_MIN = 0.1          # Y 最小 (m)，右墙边界
-ROOM_X_MAX = 4.5          # X 最大 (m)，后墙边界
-ROOM_Y_MAX = 8.8          # Y 最大 (m)，左墙边界
-
-
-
-
-# 小车定位（与 CarControlServiceFlask 保持一致）
+OBSTACLE_MARGIN = 0.3
+GRID_EXPAND = 0.228
+GRID_X_STEP = 0.4
+GRID_Y_STEP = 0.4
+COST_DIST_WEIGHT = 1.0
+COST_RISK_WEIGHT = 0
+CORRECTION_CORRIDOR_WIDTH = 0.3
+CORRECTION_MIN_INTERVAL = 1.0
+ROOM_X_MIN = 0.1
+ROOM_Y_MIN = 0.1
+ROOM_X_MAX = 4.5
+ROOM_Y_MAX = 8.8
 X_OFFSET = 0.0
 Y_OFFSET = 0.0
 
@@ -272,14 +247,13 @@ def _simplify_waypoints(waypoints):
     return result
 
 
+
 # ============================================================
 #  路径重采样（按个数）
 # ============================================================
 
 def _resample_waypoints(waypoints, target_count):
-    """
-    将路径均匀采样到 target_count 个点，保持相邻点仅单轴变化。
-    """
+    """将路径均匀采样到 target_count 个点"""
     if target_count < 2 or len(waypoints) < 2:
         return waypoints
 
@@ -316,20 +290,13 @@ def _resample_waypoints(waypoints, target_count):
     return result
 
 
+
 # ============================================================
 #  校正点规划
 # ============================================================
 
 def _is_correction_safe(cx, cy, obstacles, width=CORRECTION_CORRIDOR_WIDTH):
-    """
-    检查点 (cx,cy) 是否适合做位姿校正。
-
-    校正依赖前后左右四个方向的 LiDAR 光束打到墙上：
-      - 障碍物跟车在同一 Y 行 → 前后光束被挡
-      - 障碍物跟车在同一 X 列 → 左右光束被挡
-
-    所以障碍物对应的整条 X 列、整条 Y 行都不能校正。
-    """
+    """检查点是否适合做位姿校正（同 X/Y 列无障碍物阻挡 LiDAR 光束）"""
     for obs in obstacles:
         ox, oy = obs['x'], obs['y']
         # 同一 Y 行 → 前后 LiDAR 被挡
@@ -343,21 +310,7 @@ def _is_correction_safe(cx, cy, obstacles, width=CORRECTION_CORRIDOR_WIDTH):
 
 def plan_correction_points(waypoints, obstacles,
                             min_interval=CORRECTION_MIN_INTERVAL):
-    """
-    从路径点序列中选出适合做位姿校正的点。
-
-    规则：
-      1. 起点和终点始终标记（即使不完全安全，调用方自行判断）
-      2. 中间点须满足四方向走廊无障碍物
-      3. 相邻校正点间距不小于 min_interval
-
-    返回:
-        [
-            {"index": 0, "x": x0, "y": y0, "type": "start", "safe": bool},
-            {"index": 2, "x": x2, "y": y2, "type": "intermediate", "safe": bool},
-            {"index": 4, "x": x4, "y": y4, "type": "end", "safe": bool},
-        ]
-    """
+    """从路径点中选出适合位姿校正的点（起终点始终标记，中间点须安全）"""
     if not waypoints or not obstacles:
         # 无障碍物 → 起点终点都可以校正
         result = []
@@ -401,15 +354,13 @@ def plan_correction_points(waypoints, obstacles,
     return points
 
 
+
 # ============================================================
 #  打分函数
 # ============================================================
 
 def _score_path(waypoints, obstacles):
-    """
-    对路径打分（越低越好）：
-      score = 路径总长 + 风险惩罚 × 距离倒数
-    """
+    """路径打分：总长 + 风险惩罚（越低越好）"""
     total_len = 0.0
     min_dist = float('inf')
     for i in range(len(waypoints) - 1):
@@ -424,6 +375,7 @@ def _score_path(waypoints, obstacles):
     return COST_DIST_WEIGHT * total_len + COST_RISK_WEIGHT * risk
 
 
+
 # ============================================================
 #  主入口
 # ============================================================
@@ -435,17 +387,7 @@ def plan_path(start_x, start_y, end_x, end_y,
               num_waypoints=0,
               jump_threshold=None,
               cluster_min_beams=None):
-    """
-    规划从起点到终点的避障路径（A* 搜索）。
-
-    参数:
-        start_x, start_y:   起点坐标
-        end_x, end_y:       终点坐标
-        car_x, car_y:       小车位置（给障碍物检测用）
-        forbidden_zones:    禁区列表 [(xmin,xmax,ymin,ymax), ...] 相对坐标
-        origin_x, origin_y: 禁区坐标原点（小车设定禁区时的位置）
-        num_waypoints:      期望输出点数（0 = 自动，按曼哈顿距离每米1个点）
-    """
+    """规划避障路径（A*）。forbidden_zones 为相对坐标列表，num_waypoints=0 自动密度。"""
     kwargs = {}
     if jump_threshold is not None:
         kwargs['jump_threshold'] = jump_threshold
@@ -514,6 +456,7 @@ def plan_path(start_x, start_y, end_x, end_y,
     }
 
 
+
 # ============================================================
 #  便捷入口
 # ============================================================
@@ -538,7 +481,6 @@ def plan_path_to(target_x, target_y,
     )
 
 
-# ── 命令行测试入口 ──
 if __name__ == "__main__":
     import sys
 

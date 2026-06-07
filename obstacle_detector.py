@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-障碍物检测模块 — 从 LiDAR 距离突变中检测安全区外的障碍物。
-
-独立于 Flask 服务端，可单独测试：
-    python3 obstacle_detector.py
-"""
+# 从 LiDAR 距离突变中检测障碍物
 
 import rospy
 import numpy as np

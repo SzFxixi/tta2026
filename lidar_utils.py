@@ -48,39 +48,15 @@ def getsum(samples=LIDAR_SAMPLES):
     return front_sum / samples + rear_sum / samples
 
 
-# ============================================================
-#  PoseCorrector 类
-# ============================================================
-
 class PoseCorrector:
-    """
-    位姿校正器。
-
-    用法:
-        pc = PoseCorrector("192.168.42.2", 40923)
-        pc.connect()
-        pc.set_baseline()           # 1. 设定基准
-
-        # ... 小车移动、旋转 ...
-
-        dev = pc.get_deviation()    # 2. 检测偏角
-        if dev is not None:
-            print(f"当前偏角: {dev:.1f}°")
-
-        ok = pc.correct_if_needed() # 3. 超过阈值则校正
-        pc.disconnect()
-    """
+    """位姿校正器：set_baseline → get_deviation → correct_if_needed"""
 
     def __init__(self, chassis_ip="192.168.42.2", chassis_port=40923):
         self._ip = chassis_ip
         self._port = chassis_port
         self._sock = None
-
-        # 基准值（由 set_baseline() 设定）
-        self.baseline_distance = 0.0   # 基准前后距离和
-        self.baseline_yaw = 0.0        # 基准底盘偏航角 (度)
-
-    # ── 连接 / 断开 ──
+        self.baseline_distance = 0.0
+        self.baseline_yaw = 0.0
 
     def connect(self):
         """建立底盘 TCP 连接，初始化 ROS 节点"""
@@ -105,25 +81,17 @@ class PoseCorrector:
             self._sock.close()
             self._sock = None
 
-    # ── 底盘通信底层 ──
-
     def _send_chassis(self, cmd: str):
-        """发送底盘指令并等待运动完成"""
         if not cmd.endswith(";"):
             cmd += ";"
         self._sock.send(cmd.encode("utf-8"))
-
-        # 等待 ACK
         while True:
             try:
                 self._sock.recv(4096)
                 break
             except socket.timeout:
                 break
-
         time.sleep(1.0)
-
-        # 轮询轮速直到停转或超时
         start = time.time()
         while True:
             if time.time() - start > MOVE_TIMEOUT:
@@ -145,32 +113,12 @@ class PoseCorrector:
         _, _, yaw = map(float, result[:3])
         return yaw
 
-    # ════════════════════════════════════════════════════════
-    #  功能一：设定基准
-    # ════════════════════════════════════════════════════════
-
     def set_baseline(self):
-        """记录基准：前后墙距离和 + 底盘偏航角"""
         self.baseline_distance = getsum()
         self.baseline_yaw = self._get_yaw()
 
-    # ════════════════════════════════════════════════════════
-    #  功能二：检测偏角
-    # ════════════════════════════════════════════════════════
-
     def _compute_lidar_angle(self) -> float:
-        """
-        用 LiDAR 前后距离和反推车身相对墙面的偏角。
-
-        原理:
-            baseline = 车正对墙时的前后距离和
-            current  = 车倾斜时的前后距离和
-            t = baseline / current
-            angle = arccos(t)    ← 车身与墙面法线的夹角
-
-        返回:
-            float: 偏角 (度)，恒为非负值
-        """
+        """arccos(baseline/current) 反推车身偏角"""
         s = getsum()
         if s <= 0:
             return 0.0
@@ -191,12 +139,8 @@ class PoseCorrector:
             yaw_drift = 360 - yaw_drift
         return lidar_angle
 
-    # ════════════════════════════════════════════════════════
-    #  功能三：分析与校正
-    # ════════════════════════════════════════════════════════
-
     def correct_if_needed(self) -> bool:
-        """检测偏角是否超过阈值，超过则逐步校正直到收敛。返回 True=执行了校正。"""
+        """检测偏角是否超过阈值，超过则逐步校正直到收敛"""
         if self.baseline_distance == 0.0:
             return False
 
