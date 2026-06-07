@@ -133,7 +133,7 @@ def main():
 
     # baseline
     from obstacle_detector import detect_obstacles
-    from pose_correction import getsum
+    from lidar_utils import getsum
 
     # 获取小车位置
     cx, cy = car_position()

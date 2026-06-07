@@ -14,7 +14,7 @@
 """
 
 import sys
-from pose_correction import PoseCorrector
+from lidar_utils import PoseCorrector
 
 
 def main():
