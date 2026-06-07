@@ -165,9 +165,15 @@ def main():
         print(f"\n  未检测到障碍物 ✓")
 
     # 禁区设置
-    from path_planner import plan_path, setup_forbidden_zones
-    forbidden_zones = setup_forbidden_zones()
-    origin_x, origin_y = cx, cy
+    from path_planner import plan_path
+    from forbidden_zones import load_forbidden_zones, setup_forbidden_zones
+
+    zones, origin_x, origin_y = load_forbidden_zones()
+    if zones is None:
+        print("\n未找到禁区配置，进入设置流程...")
+        zones, origin_x, origin_y = setup_forbidden_zones()
+    else:
+        print(f"\n已加载禁区配置: {len(zones)} 个禁区, 原点=({origin_x:.3f},{origin_y:.3f})")
 
     # ────────────────────────────────────────────────
     #  阶段二：路径规划
@@ -178,7 +184,7 @@ def main():
 
     print(f"\n[4] 规划路径: ({cx:.3f}, {cy:.3f}) → ({tx:.2f}, {ty:.2f})")
     result = plan_path(cx, cy, tx, ty, cx, cy,
-                       forbidden_zones=forbidden_zones,
+                       forbidden_zones=zones,
                        origin_x=origin_x, origin_y=origin_y)
 
     wp = result["waypoints"]

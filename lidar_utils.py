@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""
-位姿校正模块 — 基于 LiDAR 前后距离和 + 底盘偏航角进行车身角度纠正。
-
-解耦自 CarControlServiceFlask.py，可独立测试：
-    python3 pose_correction.py
-
-三大功能：
-    1. set_baseline()    — 在当前位置设定基准（记录前后墙距离和 + 底盘偏航角）
-    2. get_deviation()   — 检测当前车身相对基准的偏角
-    3. correct_if_needed() — 分析偏角是否超过阈值，超过则执行校正
-"""
+# 基于 LiDAR 前后距离和 + 底盘偏航角进行车身角度纠正
 
 import socket
 import time
@@ -19,43 +9,21 @@ import math
 from sensor_msgs.msg import LaserScan
 
 
-# ============================================================
-#  可调参数
-# ============================================================
+# 可调参数
+DEVIATION_LARGE = 6.0
+DEVIATION_SMALL = 4.0
+YAW_DRIFT_THRESHOLD = 3.0
+CORRECTION_STEP = 8.0
+CORRECTION_SLEEP = 0.5
+MAX_ITERATIONS = 20
+LIDAR_SAMPLES = 5
+CHASSIS_SOCKET_TIMEOUT = 3.0
+MOVE_TIMEOUT = 10.0
+WHEEL_SPEED_THRESHOLD = 10.0
 
-# ── 校正触发阈值 ──
-DEVIATION_LARGE = 6.0       # LiDAR 偏角超过此值 → 无条件校正 (度)
-DEVIATION_SMALL = 4.0       # LiDAR 偏角超过此值，且底盘 yaw 也确认漂移 → 校正 (度)
-YAW_DRIFT_THRESHOLD = 3.0   # 底盘 yaw 漂移量超过此值，配合 SMALL 阈值确认 (度)
-
-# ── 校正执行 ──
-CORRECTION_STEP = 8.0       # 每次校正旋转角度 (度)
-CORRECTION_SLEEP = 0.5      # 每次校正后等待 (秒)
-MAX_ITERATIONS = 20         # 单次校正最多循环次数，防止死循环
-
-# ── LiDAR 采样 ──
-LIDAR_SAMPLES = 5           # getsum() 对前后距离各取多少帧做平均
-
-# ── 底盘通信 ──
-CHASSIS_SOCKET_TIMEOUT = 3.0       # socket recv 超时 (秒)
-MOVE_TIMEOUT = 10.0                # 等待轮子停转的超时 (秒)
-WHEEL_SPEED_THRESHOLD = 10.0       # 四轮速度全低于此值视为已停转
-
-
-# ============================================================
-#  LiDAR 工具函数
-# ============================================================
 
 def getsum(samples=LIDAR_SAMPLES):
-    """
-    取前后激光距离的均值之和（多次采样取平均，抑制噪声）。
-
-    前激光 = 扫描正前方 (middle 光束)
-    后激光 = 扫描正后方 (倒数第 2 光束)
-
-    返回:
-        float: 前墙距离 + 后墙距离
-    """
+    """前后激光距离均值之和（多次采样平均）"""
     front_sum = 0.0
     rear_sum = 0.0
 

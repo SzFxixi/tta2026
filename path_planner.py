@@ -18,6 +18,7 @@ import rospy
 import numpy as np
 from sensor_msgs.msg import LaserScan
 from obstacle_detector import detect_obstacles
+from forbidden_zones import point_in_forbidden, segment_crosses_forbidden
 
 
 # ============================================================
@@ -84,73 +85,6 @@ def get_car_position():
 #  几何工具
 # ============================================================
 
-# ============================================================
-#  禁区管理
-# ============================================================
-
-def setup_forbidden_zones():
-    """
-    交互式设置禁区。移动小车到禁区的一个角点按 Enter，再移到对角点按 Enter。
-    按 Q 退出。坐标以调用此函数时的小车位置为原点（相对坐标）。
-
-    返回:
-        [(xmin, xmax, ymin, ymax), ...]  每个禁区由 X/Y 范围定义（相对坐标）
-    """
-    origin_x, origin_y = get_car_position()
-    zones = []
-    print(f"\n禁区设置 (原点={origin_x:.3f},{origin_y:.3f})")
-    print("移动小车到禁区角点，按 Enter 记录；按 Q 退出")
-
-    while True:
-        choice = input(">>> ").strip()
-        if choice.upper() == 'Q':
-            break
-
-        cx1, cy1 = get_car_position()
-        rx1, ry1 = cx1 - origin_x, cy1 - origin_y
-        print(f"  角点1 绝对:({cx1:.3f},{cy1:.3f})  相对:({rx1:+.3f},{ry1:+.3f})")
-
-        input("  移动到对角点后按 Enter...")
-        cx2, cy2 = get_car_position()
-        rx2, ry2 = cx2 - origin_x, cy2 - origin_y
-        print(f"  角点2 绝对:({cx2:.3f},{cy2:.3f})  相对:({rx2:+.3f},{ry2:+.3f})")
-
-        zone = (min(rx1, rx2), max(rx1, rx2), min(ry1, ry2), max(ry1, ry2))
-        zones.append(zone)
-        print(f"  ✓ 禁区 #{len(zones)}: X[{zone[0]:.3f}~{zone[1]:.3f}] Y[{zone[2]:.3f}~{zone[3]:.3f}]")
-
-    print(f"共设置 {len(zones)} 个禁区\n")
-    return zones
-
-
-def _point_in_forbidden(px, py, forbidden_zones, origin_x=0.0, origin_y=0.0):
-    """点 (px,py) 是否在某个禁区内。禁区坐标是相对值，需要加原点偏移。"""
-    for xmin, xmax, ymin, ymax in forbidden_zones:
-        ax, bx = xmin + origin_x, xmax + origin_x
-        ay, by = ymin + origin_y, ymax + origin_y
-        if ax <= px <= bx and ay <= py <= by:
-            return True
-    return False
-
-
-def _segment_crosses_forbidden(ax, ay, bx, by, forbidden_zones,
-                                origin_x=0.0, origin_y=0.0):
-    """线段 AB 是否穿过某个禁区（用分段采样检测）。"""
-    if not forbidden_zones:
-        return False
-    seg_len = math.hypot(bx - ax, by - ay)
-    if seg_len < 0.001:
-        return _point_in_forbidden(ax, ay, forbidden_zones, origin_x, origin_y)
-    n_samples = max(2, int(seg_len / 0.05))
-    for i in range(n_samples + 1):
-        t = i / n_samples
-        px = ax + (bx - ax) * t
-        py = ay + (by - ay) * t
-        if _point_in_forbidden(px, py, forbidden_zones, origin_x, origin_y):
-            return True
-    return False
-
-
 def _point_to_segment_dist(px, py, ax, ay, bx, by):
     """点 (px,py) 到线段 AB 的最短距离"""
     dx, dy = bx - ax, by - ay
@@ -166,7 +100,7 @@ def _segment_safe(ax, ay, bx, by, obstacles, margin=OBSTACLE_MARGIN,
     for obs in obstacles:
         if _point_to_segment_dist(obs['x'], obs['y'], ax, ay, bx, by) < margin:
             return False
-    if forbidden_zones and _segment_crosses_forbidden(ax, ay, bx, by,
+    if forbidden_zones and segment_crosses_forbidden(ax, ay, bx, by,
                                                        forbidden_zones, origin_x, origin_y):
         return False
     return True
@@ -178,7 +112,7 @@ def _point_safe(px, py, obstacles, margin=OBSTACLE_MARGIN,
     for obs in obstacles:
         if math.hypot(px - obs['x'], py - obs['y']) < margin:
             return False
-    if forbidden_zones and _point_in_forbidden(px, py, forbidden_zones, origin_x, origin_y):
+    if forbidden_zones and point_in_forbidden(px, py, forbidden_zones, origin_x, origin_y):
         return False
     return True
 
