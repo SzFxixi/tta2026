@@ -100,9 +100,21 @@ class _CarClient:
         return self._post("SyncYaw", timeout=20)
 
     def move_relative(self, dx, dy):
-        """相对位移"""
+        """相对位移（底盘坐标系：+x=前进, +y=右移）"""
         return self._post("MoveRelative", {
             "delta_x": dx, "delta_y": dy
+        })
+
+    def move_x(self, target_x, ref_y):
+        """仅 X 轴移动（绝对坐标，服务端 LiDAR 反馈）"""
+        return self._post("MoveOnlyX", {
+            "location_x": target_x, "location_y": ref_y
+        })
+
+    def move_y(self, target_y, ref_x):
+        """仅 Y 轴移动（绝对坐标，服务端 LiDAR 反馈）"""
+        return self._post("MoveOnlyY", {
+            "location_x": ref_x, "location_y": target_y
         })
 
 
@@ -111,24 +123,18 @@ class _CarClient:
 # ============================================================
 
 def _move_segment(x1, y1, x2, y2, client):
-    """将绝对路点段转为相对位移并执行"""
-    dx = x2 - x1
-    dy = y2 - y1
+    """执行轴对齐移动，用 MoveOnlyX 或 MoveOnlyY（服务端 LiDAR 闭环）"""
+    dx = abs(x2 - x1)
+    dy = abs(y2 - y1)
 
-    if abs(dx) < 0.001 and abs(dy) < 0.001:
-        return True, None
-
-    direction = ""
-    if abs(dx) > 0.001 and abs(dy) < 0.001:
-        direction = f"dX={dx:+.3f}"
-    elif abs(dy) > 0.001 and abs(dx) < 0.001:
-        direction = f"dY={dy:+.3f}"
+    if dx > 0.001 and dy < 0.001:
+        print(f"  → MoveOnlyX → X={x2:.3f} (ref Y={y1:.3f})")
+        return client.move_x(x2, y1)
+    elif dy > 0.001 and dx < 0.001:
+        print(f"  → MoveOnlyY → Y={y2:.3f} (ref X={x1:.3f})")
+        return client.move_y(y2, x1)
     else:
-        direction = f"dX={dx:+.3f}, dY={dy:+.3f}"
-
-    print(f"  → MoveRelative: {direction}")
-    ok, resp = client.move_relative(dx, dy)
-    return ok, resp
+        return True, None
 
 
 def _do_correction(client, expected_x, expected_y):
@@ -150,10 +156,21 @@ def _do_correction(client, expected_x, expected_y):
         print("  ✗ 角度校正失败")
 
     # ── 2) 坐标校正 ──
+    _force_position_correct(client, expected_x, expected_y)
+
+
+def _force_position_correct(client, expected_x, expected_y):
+    """
+    强制坐标校正：仅用 LiDAR (getx/gety) 读数对比期望坐标，
+    偏差超过阈值就补相对位移（底盘坐标系），不做角度校正。
+    """
+    from path_planner import get_car_position
+
     for attempt in range(1, MAX_POS_CORRECTION_RETRIES + 1):
         cx, cy = get_car_position()
-        err_x = expected_x - cx
+        err_x = expected_x - cx          # LiDAR 偏差
         err_y = expected_y - cy
+        cdx, cdy = cx - expected_x, cy - expected_y   # 底盘位移（取反）
         err = math.hypot(err_x, err_y)
 
         print(f"  → 坐标校正 #{attempt}: 期望({expected_x:.3f},{expected_y:.3f}) "
@@ -163,9 +180,8 @@ def _do_correction(client, expected_x, expected_y):
             print(f"  ✓ 坐标已收敛 (误差 {err:.3f}m <= {POS_CORRECTION_THRESHOLD}m)")
             break
 
-        # 发一个相对位移纠正当前位置
-        print(f"    补相对位移: ({err_x:+.3f}, {err_y:+.3f})")
-        ok, _ = client.move_relative(err_x, err_y)
+        print(f"    补底盘位移: ({cdx:+.3f}, {cdy:+.3f})")
+        ok, _ = client.move_relative(cdx, cdy)
         if not ok:
             print(f"  ✗ 纠正移动失败")
             break
@@ -236,9 +252,9 @@ def run_mission_step(point_ids, client):
                 return False
             time.sleep(STEP_DELAY)
 
-        # 到达目标点 → 校正
-        print(f"\n  ✓ 到达点位 {pid}")
-        _do_correction(client, tx, ty)
+        # 到达目标点 → 强制坐标校正（仅用 LiDAR，不做角度校正）
+        print(f"\n  ✓ 到达点位 {pid}，强制坐标校正...")
+        _force_position_correct(client, tx, ty)
 
     return True
 

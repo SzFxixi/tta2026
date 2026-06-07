@@ -13,6 +13,7 @@
 
 import sys
 import time
+import math
 import rospy
 import requests
 import numpy as np
@@ -66,9 +67,17 @@ class _Client:
     def sync_yaw(self):
         return self._post("SyncYaw", timeout=20)
 
-    def move(self, tx, ty):
-        """使用 /Move 端点（X+Y while 循环，更稳健）"""
-        return self._post("Move", {"location_x": tx, "location_y": ty})
+    def move_relative(self, dx, dy):
+        """相对位移（底盘坐标系：+x=前进, +y=右移）"""
+        return self._post("MoveRelative", {"delta_x": dx, "delta_y": dy})
+
+    def move_x(self, target_x, ref_y):
+        """仅 X 轴移动（绝对坐标，服务端 LiDAR 反馈）"""
+        return self._post("MoveOnlyX", {"location_x": target_x, "location_y": ref_y})
+
+    def move_y(self, target_y, ref_x):
+        """仅 Y 轴移动（绝对坐标，服务端 LiDAR 反馈）"""
+        return self._post("MoveOnlyY", {"location_x": ref_x, "location_y": target_y})
 
 
 # ============================================================
@@ -207,79 +216,105 @@ def main():
     # ────────────────────────────────────────────────
     input("\n>>> 路径规划完成，按 Enter 开始执行移动...")
 
-    #  阶段三：执行
+    # ────────────────────────────────────────────────
+    #  阶段三：执行（MoveOnlyX/Y 绝对移动 + 强制终点校正）
     # ────────────────────────────────────────────────
     print("\n" + "=" * 60)
     print("  阶段三：执行移动")
     print("=" * 60)
 
-    # 记录规划时的 LiDAR 基准值（纯诊断用，不连底盘）
-    baseline_sum = getsum()
+    POS_THRESHOLD = 0.08
+    MAX_RETRIES = 5
 
     for i in range(len(wp) - 1):
         x1, y1 = wp[i]
         x2, y2 = wp[i + 1]
         dx, dy = abs(x2 - x1), abs(y2 - y1)
 
-        # ── 校正点处理 ──
+        # ── 中间校正点 ──
         if i in cp_indices:
             cpi = next(p for p in cp if p["index"] == i)
             if cpi["safe"]:
                 print(f"\n--- ★ 校正点 #{i} ({x1:.3f}, {y1:.3f}) [{cpi['type']}] ---")
-                print(f"  现在执行位姿校正 (SyncYaw)...")
+                # 角度校正
+                print(f"  角度校正 (SyncYaw)...")
                 sum_before = getsum()
-                print(f"  校正前 LiDAR距离和: {sum_before:.3f}m")
-
                 ok, _ = cli.sync_yaw()
-                if ok:
-                    sum_after = getsum()
-                    print(f"  校正后 LiDAR距离和: {sum_after:.3f}m")
-                    print(f"  ✓ 校正执行成功")
+                sum_after = getsum()
+                print(f"  LiDAR距离和: {sum_before:.3f}m → {sum_after:.3f}m  {'✓' if ok else '✗'}")
+                # 坐标校正：LiDAR 偏差 → 底盘坐标系相对位移（底盘+x=LiDAR X↓，所以取反）
+                for retry in range(1, MAX_RETRIES + 1):
+                    cx, cy = car_position()
+                    ex, ey = x1 - cx, y1 - cy           # LiDAR 偏差
+                    cdx, cdy = cx - x1, cy - y1          # 底盘相对位移（取反）
+                    err = math.hypot(ex, ey)
+                    print(f"  坐标校正 #{retry}: 期望({x1:.3f},{y1:.3f}) 实际({cx:.3f},{cy:.3f}) 误差{err:.3f}m")
+                    if err <= POS_THRESHOLD:
+                        print(f"  ✓ 坐标已收敛")
+                        break
+                    print(f"    补底盘位移: ({cdx:+.3f}, {cdy:+.3f})")
+                    cli.move_relative(cdx, cdy)
+                    time.sleep(0.3)
                 else:
-                    print(f"  ✗ 校正执行失败")
+                    print(f"  ⚠ 坐标校正未收敛，继续执行")
             else:
-                print(f"\n--- 校正点 #{i} 有遮挡，跳过校正 ---")
-        else:
-            # 起点也检测一下
-            label = "起点" if i == 0 else ""
-            if label:
-                print(f"\n--- {label} ({x1:.3f}, {y1:.3f}) ---")
-                print(f"  LiDAR距离和: {getsum():.3f}m")
+                print(f"\n--- 校正点 #{i} 有遮挡，跳过 ---")
 
-        # ── 移动段 ──
-        if dx > 0.001 or dy > 0.001:
-            direction = "MoveOnlyX" if dx > dy else "MoveOnlyY"
-            print(f"  现在执行: Move → ({x2:.3f}, {y2:.3f}) [{direction}方向]")
-            ok, _ = cli.move(x2, y2)
+        # ── 移动段（只用 MoveOnlyX 或 MoveOnlyY，服务端 LiDAR 闭环） ──
+        if dx > 0.001 and dy < 0.001:
+            direction = f"MoveOnlyX → X={x2:.3f} (ref Y={y1:.3f})"
+            print(f"  移动: ({x1:.3f},{y1:.3f}) → ({x2:.3f},{y2:.3f})  [{direction}]")
+            ok, resp = cli.move_x(x2, y1)
+        elif dy > 0.001 and dx < 0.001:
+            direction = f"MoveOnlyY → Y={y2:.3f} (ref X={x1:.3f})"
+            print(f"  移动: ({x1:.3f},{y1:.3f}) → ({x2:.3f},{y2:.3f})  [{direction}]")
+            ok, resp = cli.move_y(y2, x1)
         else:
-            print(f"  跳过（同一点）")
             ok = True
 
         if ok:
-            print(f"  ✓ Move 执行成功: "
-                  f"({x1:.3f}, {y1:.3f}) → ({x2:.3f}, {y2:.3f})")
+            print(f"  ✓ 移动完成")
         else:
-            print(f"  ✗ Move 执行失败!")
+            print(f"  ✗ 移动失败: {resp.get('errorMessage', resp.get('error', '?'))}")
             break
 
         time.sleep(0.3)
 
-    # ── 终点偏角检测 ──
+    # ── 终点：强制坐标校正 ──
     final_x, final_y = car_position()
-    print(f"\n--- 终点 ({final_x:.3f}, {final_y:.3f}) ---")
-    # ── 终点诊断 ──
-    final_sum = getsum()
-    print(f"  终点 LiDAR距离和: {final_sum:.3f}m (基准: {baseline_sum:.3f}m)")
-    if abs(final_sum - baseline_sum) > 0.3:
-        print(f"  ⚠ 距离和偏差较大，执行终点校正...")
-        _ = cli.sync_yaw()
+    print(f"\n--- 终点强制坐标校正 ---")
+    print(f"  目标: ({tx:.2f}, {ty:.2f})")
+    print(f"  到达: ({final_x:.3f}, {final_y:.3f})")
+    print(f"  LiDAR距离和: {getsum():.3f}m")
+
+    for retry in range(1, MAX_RETRIES + 1):
+        cx, cy = car_position()
+        ex, ey = tx - cx, ty - cy            # LiDAR 偏差
+        cdx, cdy = cx - tx, cy - ty           # 底盘相对位移（取反）
+        err = math.hypot(ex, ey)
+        print(f"  校正 #{retry}: 期望({tx:.3f},{ty:.3f}) 实际({cx:.3f},{cy:.3f}) "
+              f"误差{err:.3f}m (阈值{POS_THRESHOLD:.3f}m)")
+        if err <= POS_THRESHOLD:
+            print(f"  ✓ 终点坐标已收敛!")
+            break
+        print(f"  → 补底盘位移: ({cdx:+.3f}, {cdy:+.3f})")
+        ok, _ = cli.move_relative(cdx, cdy)
+        if not ok:
+            print(f"  ✗ 纠正失败")
+            break
+        time.sleep(0.3)
+        final_x, final_y = car_position()
+    else:
+        print(f"  ⚠ 达到最大重试 {MAX_RETRIES} 次")
+        final_x, final_y = car_position()
 
     # ── 完成 ──
     print(f"\n{'=' * 60}")
     print(f"  全流程测试完成")
     print(f"  起点: ({cx:.3f}, {cy:.3f})")
-    print(f"  终点: ({final_x:.3f}, {final_y:.3f})")
     print(f"  目标: ({tx:.2f}, {ty:.2f})")
+    print(f"  终点: ({final_x:.3f}, {final_y:.3f})")
+    print(f"  终点误差: {math.hypot(tx-final_x, ty-final_y):.3f}m")
     print(f"{'=' * 60}")
 
     cli.sess.close()

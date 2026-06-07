@@ -25,7 +25,7 @@ from obstacle_detector import detect_obstacles
 # ============================================================
 
 # 障碍物回避
-OBSTACLE_MARGIN = 0.4     # 路点/路径段距障碍物的最小安全距离 (米)
+OBSTACLE_MARGIN = 0.3     # 路点/路径段距障碍物的最小安全距离 (米)
 
 # 栅格生成
 GRID_EXPAND = 0.228         # 障碍物周围额外生成的偏移路点间距 (米)
@@ -34,7 +34,7 @@ GRID_Y_STEP = 0.4         # 在起终点 Y 之间均匀插入路点的间距 (�
 
 # A* 打分
 COST_DIST_WEIGHT = 1.0    # 路径长度权重
-COST_RISK_WEIGHT = 0   # 默认走最短路径
+COST_RISK_WEIGHT = 0   # 默认走最短路径？？？
 
 # 校正点规划
 CORRECTION_CORRIDOR_WIDTH = 0.3   # 校正点前后左右走廊宽度 (米)，此范围内无障碍物才可校正

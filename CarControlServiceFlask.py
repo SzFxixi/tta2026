@@ -151,7 +151,7 @@ class CarService:
         print(f"[Baseline] 更新基准距离: {self.distance:.3f}，偏航: {self.initialYaw:.1f}°")
 
     def SyncYaw(self):
-        while True:
+        for iteration in range(20):
             self.channel.send("chassis position ?;".encode("utf-8"))
             result = self.channel.recv(1024).decode('utf-8').split(' ')
             try:
@@ -160,23 +160,24 @@ class CarService:
                 if yaw > 90:
                     yaw = yaw - 180
                 if theat > 4 and abs(self.initialYaw - yaw) > 3 or theat > 6:
-                    if yaw - self.initialYaw > 0 :
+                    if yaw - self.initialYaw > 0:
                         theat = theat * (-1)
-                    theat_offset=0
 
                     self.channel.send(f"chassis move z {theat/abs(theat)*2.5};".encode('utf-8'))
-                    print(f"SYNCYAW!theat:{theat},YAW:{yaw},INITIALYAW:{self.initialYaw}")
+                    print(f"SYNCYAW #{iteration+1}! theat:{theat:.1f}° yaw:{yaw:.1f}° initialYaw:{self.initialYaw:.1f}°")
                     time.sleep(0.5)
                     try:
                         self.channel.recv(1024)
-                        break
                     except Exception:
                         pass
+                    # 不 break，继续循环直到收敛
                 else:
-                    print(f"NO SYNCYAW!theat:{theat},YAW:{yaw},INITIALYAW:{self.initialYaw}")
+                    print(f"SYNCYAW converged! theat:{theat:.1f}° yaw:{yaw:.1f}°")
                     break
             except Exception:
                 pass
+        else:
+            print("SYNCYAW max iterations (20) reached")
 
     def return_theat(self):
         s = getsum()
