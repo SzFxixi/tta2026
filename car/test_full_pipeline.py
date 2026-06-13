@@ -49,14 +49,14 @@ _CORRECT_BEAMS = {
 #  LiDAR 定位
 # ============================================================
 
-def _get_beam(index, timeout=5.0):
+def _get_beam(index, timeout=3.0):
     data = rospy.wait_for_message("scan", LaserScan, timeout=5.0)
     n = len(data.ranges)
     d = data.ranges[index % n]
     t0 = time.time()
     while d == np.inf:
         if time.time() - t0 > timeout:
-            raise TimeoutError(f"LiDAR 光束 {index} 持续 inf，超时 {timeout}s")
+            return None
         data = rospy.wait_for_message("scan", LaserScan, timeout=5.0)
         n = len(data.ranges)
         d = data.ranges[index % n]
@@ -68,9 +68,11 @@ def _get_n():
 
 
 def car_position():
-    """规划坐标 — 前X + 右Y"""
+    """规划坐标 — 前X + 右Y。返回 (x, y) 或 (None, None)"""
     n = _get_n()
-    return _get_beam(n // 2), _get_beam(n // 4)
+    x = _get_beam(n // 2)
+    y = _get_beam(n // 4)
+    return x, y
 
 
 def _read_correct_beams(pid):
@@ -148,10 +150,37 @@ def _move_segment(x1, y1, x2, y2, cli):
     return True, None
 
 
+# 初始基准（main 中设定）
+_baseline_x_sum = None
+_baseline_y_sum = None
+
+
+def _lidar_readings_sane():
+    """检查 LiDAR 读数是否合理：前后和≈基准，左右和≈基准"""
+    if _baseline_x_sum is None:
+        return True
+    n = _get_n()
+    front = _get_beam(n // 2)
+    rear  = _get_beam(n - 2)
+    right = _get_beam(n // 4)
+    left  = _get_beam(n * 3 // 4)
+    if None in (front, rear, right, left):
+        return False
+    x_ok = abs(front + rear - _baseline_x_sum) < 1.0
+    y_ok = abs(right + left - _baseline_y_sum) < 1.0
+    return x_ok and y_ok
+
+
 def _do_correction(cli, expected_x, expected_y):
     """坐标校正（用规划坐标前X+右Y做LiDAR闭环）"""
     for attempt in range(1, MAX_RETRIES + 1):
+        if not _lidar_readings_sane():
+            print(f"  ⚠ 前后和或左右和异常，LiDAR 读数不可靠，放弃校正")
+            break
         cx, cy = car_position()
+        if cx is None or cy is None:
+            print(f"  ⚠ LiDAR 无回波，跳过坐标校正")
+            return
         err = math.hypot(expected_x - cx, expected_y - cy)
         print(f"  坐标校正 #{attempt}: 期望({expected_x:.3f},{expected_y:.3f}) "
               f"实际({cx:.3f},{cy:.3f}) 误差{err:.3f}m")
@@ -171,7 +200,8 @@ def _do_target_correction(cli, pid, target_info):
         return
     stored_x, stored_y = target_info["correct"]
     curr_x, curr_y = _read_correct_beams(pid)
-    if curr_x is None:
+    if curr_x is None or curr_y is None:
+        print("  ⚠ 校正光束无回波，跳过精校")
         return
 
     # 前/后光束 → 绝对 X；左/右光束 → 绝对 Y
@@ -262,6 +292,13 @@ def main():
     cli.reset()
     cli.set_baseline()
 
+    # 记录基准前后和、左右和（用于后续校正时的读数合理性检查）
+    global _baseline_x_sum, _baseline_y_sum
+    n = _get_n()
+    _baseline_x_sum = _get_beam(n // 2) + _get_beam(n - 2)
+    _baseline_y_sum = _get_beam(n // 4) + _get_beam(n * 3 // 4)
+    print(f"基准: 前后和={_baseline_x_sum:.3f}m  左右和={_baseline_y_sum:.3f}m")
+
     # 记录起点
     start_x, start_y = car_position()
     print(f"\n起点已记录: ({start_x:.3f}, {start_y:.3f})")
@@ -330,9 +367,11 @@ def main():
                 x1, y1 = wp[i]
                 x2, y2 = wp[i + 1]
 
-                # 中间校正点
+                # 中间校正点：角度 + 坐标
                 if i in cp_indices and cp_indices[i]["safe"]:
                     print(f"\n  ● 校正点 #{i} ({x1:.3f}, {y1:.3f})")
+                    print("  → 角度校正 (SyncYaw)...")
+                    cli.sync_yaw()
                     _do_correction(cli, x1, y1)
 
                 ok, resp = _move_segment(x1, y1, x2, y2, cli)
@@ -359,7 +398,7 @@ def main():
             elif t == "rotate":
                 deg = act.get("value", 0)
                 print(f"  → 旋转 {deg}°")
-                ok, resp = cli.circle(math.radians(deg))
+                ok, resp = cli.circle(deg)
                 if not ok:
                     print(f"  ✗ 旋转失败: {resp}")
             elif t == "stay":
