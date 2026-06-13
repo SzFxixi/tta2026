@@ -8,28 +8,21 @@ from sensor_msgs.msg import LaserScan
 
 
 # ============================================================
-#  可调参数
+#  参数 — 从 config.yaml 读取
 # ============================================================
 
-# LiDAR
-LIDAR_TIMEOUT = 5.0            # wait_for_message 超时 (秒)
+from config_loader import cfg
 
-# 突变检测
-JUMP_THRESHOLD = 0.5           # 相邻光束距离差超过此值视为突变 (米)
-
-# 种子扩展
-EXPAND_JUMP_RATIO = 2.0        # 扩展连续性: 相邻光束差 > JUMP_THRESHOLD × EXPAND_JUMP_RATIO 时停止
-
-# 聚类
-CLUSTER_MIN_BEAMS = 5          # 最少连续光束数，少于此数视为噪点丢弃
-CLUSTER_MAX_GAP = 10            # 同一簇内允许的最大光束索引间隔
-CROSS_ZERO_MERGE_MARGIN = 5    # 簇触及 0° 两侧 margin 光束内时尝试跨 0° 合并
-
-# 房间有效范围（超出此范围的障碍物视为噪声丢弃）
-ROOM_X_MIN = 0.2
-ROOM_X_MAX = 4.7
-ROOM_Y_MIN = 0.2
-ROOM_Y_MAX = 8.8
+LIDAR_TIMEOUT = cfg.obstacle.lidar_timeout
+JUMP_THRESHOLD = cfg.obstacle.jump_threshold
+EXPAND_JUMP_RATIO = cfg.obstacle.expand_jump_ratio
+CLUSTER_MIN_BEAMS = cfg.obstacle.cluster_min_beams
+CLUSTER_MAX_GAP = cfg.obstacle.cluster_max_gap
+CROSS_ZERO_MERGE_MARGIN = cfg.obstacle.cross_zero_merge_margin
+ROOM_X_MIN = cfg.obstacle.filter_x_min
+ROOM_X_MAX = cfg.obstacle.filter_x_max
+ROOM_Y_MIN = cfg.obstacle.filter_y_min
+ROOM_Y_MAX = cfg.obstacle.filter_y_max
 
 
 # ============================================================

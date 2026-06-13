@@ -13,6 +13,8 @@ import signal
 import os
 import math
 
+from config_loader import cfg
+
 def getx():
     data = rospy.wait_for_message("scan", LaserScan)
     number = len(data.ranges)
@@ -142,7 +144,7 @@ class CarService:
                 theat = self.return_theat()
                 if yaw > 90:
                     yaw = yaw - 180
-                if theat > 20:
+                if theat > cfg.server.sync_yaw_threshold_deg:
                     if yaw - self.initialYaw > 0:
                         theat = theat * (-1)
                     step = max(2.5, min(abs(theat), 10.0)) * (theat / abs(theat))

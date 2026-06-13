@@ -39,6 +39,7 @@ ACTIONS = {
         {"type": "stay"},
     ],
     6: [
+        {"type": "correct"},
         {"type": "rotate", "value": 180},
         {"type": "stay"},
         {"type": "rotate", "value": -180},

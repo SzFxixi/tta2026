@@ -6,7 +6,9 @@ import numpy as np
 from sensor_msgs.msg import LaserScan
 
 
-LIDAR_SAMPLES = 5
+from config_loader import cfg
+
+LIDAR_SAMPLES = cfg.lidar.samples
 
 
 def getsum(samples=LIDAR_SAMPLES):

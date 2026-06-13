@@ -11,24 +11,26 @@ from forbidden_zones import point_in_forbidden, segment_crosses_forbidden
 
 
 # ============================================================
-#  可调参数
+#  参数 — 从 config.yaml 读取
 # ============================================================
 
-OBSTACLE_MARGIN = 0.3
-WALL_MARGIN = 0.3
-GRID_EXPAND = 0.228
-GRID_X_STEP = 0.4
-GRID_Y_STEP = 0.4
-COST_DIST_WEIGHT = 1.0
-COST_RISK_WEIGHT = 0
-CORRECTION_CORRIDOR_WIDTH = 0.3
-CORRECTION_MIN_INTERVAL = 1.0
-ROOM_X_MIN = 0.1
-ROOM_Y_MIN = 0.1
-ROOM_X_MAX = 4.5
-ROOM_Y_MAX = 8.8
-X_OFFSET = 0.0
-Y_OFFSET = 0.0
+from config_loader import cfg
+
+OBSTACLE_MARGIN = cfg.path_planning.obstacle_margin
+WALL_MARGIN = cfg.path_planning.wall_margin
+GRID_EXPAND = cfg.path_planning.grid_expand
+GRID_X_STEP = cfg.path_planning.grid_x_step
+GRID_Y_STEP = cfg.path_planning.grid_y_step
+COST_DIST_WEIGHT = cfg.path_planning.cost_dist_weight
+COST_RISK_WEIGHT = cfg.path_planning.cost_risk_weight
+CORRECTION_CORRIDOR_WIDTH = cfg.path_planning.correction_corridor_width
+CORRECTION_MIN_INTERVAL = cfg.path_planning.correction_min_interval
+ROOM_X_MIN = cfg.room.x_min
+ROOM_Y_MIN = cfg.room.y_min
+ROOM_X_MAX = cfg.room.x_max
+ROOM_Y_MAX = cfg.room.y_max
+X_OFFSET = cfg.room.x_offset
+Y_OFFSET = cfg.room.y_offset
 
 
 # ============================================================
@@ -70,13 +72,31 @@ def _point_to_segment_dist(px, py, ax, ay, bx, by):
     return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 
+_cached_zones = None
+_loaded_zones = False
+
+
+def _get_forbidden_zones():
+    """加载禁区（缓存），失败返回 None"""
+    global _cached_zones, _loaded_zones
+    if not _loaded_zones:
+        _loaded_zones = True
+        try:
+            from forbidden_zones import load_forbidden_zones
+            _cached_zones = load_forbidden_zones()
+        except Exception:
+            _cached_zones = None
+    return _cached_zones
+
+
 def _segment_safe(ax, ay, bx, by, obstacles, margin=OBSTACLE_MARGIN,
                   forbidden_zones=None):
     """线段 AB 到所有障碍物的距离是否都大于 margin，且不穿过禁区"""
     for obs in obstacles:
         if _point_to_segment_dist(obs['x'], obs['y'], ax, ay, bx, by) < margin:
             return False
-    if forbidden_zones and segment_crosses_forbidden(ax, ay, bx, by, forbidden_zones):
+    zones = forbidden_zones or _get_forbidden_zones()
+    if zones and segment_crosses_forbidden(ax, ay, bx, by, zones):
         return False
     return True
 
@@ -87,7 +107,8 @@ def _point_safe(px, py, obstacles, margin=OBSTACLE_MARGIN,
     for obs in obstacles:
         if math.hypot(px - obs['x'], py - obs['y']) < margin:
             return False
-    if forbidden_zones and point_in_forbidden(px, py, forbidden_zones):
+    zones = forbidden_zones or _get_forbidden_zones()
+    if zones and point_in_forbidden(px, py, zones):
         return False
     return True
 
