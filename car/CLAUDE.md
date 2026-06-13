@@ -45,7 +45,7 @@ Logs go to `~/car2_logs/`.
 | `lidar_utils.py` | LiDAR utility: `getsum()` — averaged front+rear beam distance sum used for angle diagnostics in `test_full_pipeline.py`. | ROS, numpy |
 | `forbidden_zones.py` | Forbidden zone (no-go area) management: interactive setup, save/load/edit via `forbidden_zones.json`. Uses absolute coordinates. Currently decoupled from path_planner — standalone tool. | ROS, LiDAR |
 | `target_points.py` | Interactive tool to set 6 target point coordinates. Each point uses a different LiDAR beam combo (front/rear X, right/left Y) depending on car orientation at that position. Saved to `target_points.json`. | ROS, LiDAR |
-| `actions.py` | Per-point action config (rotate angle, stay duration) for 6 points. Pure data module — no runtime dependencies. | None |
+| `action_for_each_target.py` | Per-point action config (rotate, stay, correct) for 6 points. Pure data module — no runtime dependencies. | None |
 | `path_simulator.py` | Standalone matplotlib GUI simulator for A* path planning. Click to place start/goal/obstacles/no-go zones, see paths and correction points in real time. Runs without ROS on any machine. | matplotlib, numpy |
 | `LidarTest.py` | Standalone wall-fitting via PCA + linear regression (debug/diagnostic tool, not used by any other module) | sklearn, ROS |
 

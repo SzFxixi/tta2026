@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-全流程测试脚本 — 检测 → 规划 → 执行 一体化验证。
+全流程任务脚本 — 无限循环，输入 1~7 从当前位置前往目标点并执行配套动作。
 
 用法（在小车上运行，需 ROS + LiDAR + Flask 服务端）:
-    python3 test_full_pipeline.py <target_x> <target_y>
+    python3 test_full_pipeline.py
 
-流程:
-    阶段一：检测 — 输出 baseline + 障碍物坐标
-    阶段二：规划 — 输出路径点 + 校正点表格
-    阶段三：执行 — 逐段移动，检测偏角，打印执行状态
+点位来源:
+    1~6: target_points.json（规划坐标 + 校正坐标）
+    7:   起点（运行时自动记录）
+
+动作来源:
+    action_for_each_target.py（rotate / stay / correct）
 """
 
 import sys
@@ -19,7 +21,6 @@ import requests
 import numpy as np
 from sensor_msgs.msg import LaserScan
 
-
 # ============================================================
 #  配置
 # ============================================================
@@ -28,10 +29,60 @@ CAR_IP = "10.26.36.227"
 CAR_PORT = 5000
 BASE_URL = f"http://{CAR_IP}:{CAR_PORT}"
 MOVE_TIMEOUT = 30
+STEP_DELAY = 0.3
+POS_THRESHOLD = 0.08
+MAX_RETRIES = 5
+
+ROOM_X_MAX = 4.5
+ROOM_Y_MAX = 8.8
+
+# 每个点位的校正光束索引表达式
+_CORRECT_BEAMS = {
+    1: ("n//2",   "n//4"),     # 前 + 右
+    2: ("n-2",    "n//4"),     # 后 + 右
+    3: ("n-2",    "n*3//4"),   # 后 + 左
+    4: ("n//2",   "n*3//4"),   # 前 + 左
+}
 
 
 # ============================================================
-#  服务器通信
+#  LiDAR 定位
+# ============================================================
+
+def _get_beam(index):
+    data = rospy.wait_for_message("scan", LaserScan)
+    n = len(data.ranges)
+    d = data.ranges[index % n]
+    while d == np.inf:
+        data = rospy.wait_for_message("scan", LaserScan)
+        n = len(data.ranges)
+        d = data.ranges[index % n]
+    return d
+
+
+def _get_n():
+    return len(rospy.wait_for_message("scan", LaserScan).ranges)
+
+
+def car_position():
+    """规划坐标 — 前X + 右Y"""
+    n = _get_n()
+    return _get_beam(n // 2), _get_beam(n // 4)
+
+
+def _read_correct_beams(pid):
+    """读取点位 pid 对应的校正光束原始距离"""
+    if pid not in _CORRECT_BEAMS:
+        return None, None
+    n = _get_n()
+    x_expr, y_expr = _CORRECT_BEAMS[pid]
+    x = _get_beam(eval(x_expr, {"n": n}))
+    y = _get_beam(eval(y_expr, {"n": n}))
+    return x, y
+
+
+# ============================================================
+#  Flask 通信
 # ============================================================
 
 class _Client:
@@ -68,42 +119,126 @@ class _Client:
         return self._post("SyncYaw", timeout=20)
 
     def move_relative(self, dx, dy):
-        """相对位移（底盘坐标系：+x=前进, +y=右移）"""
         return self._post("MoveRelative", {"delta_x": dx, "delta_y": dy})
 
     def move_x(self, target_x, ref_y):
-        """仅 X 轴移动（绝对坐标，服务端 LiDAR 反馈）"""
         return self._post("MoveOnlyX", {"location_x": target_x, "location_y": ref_y})
 
     def move_y(self, target_y, ref_x):
-        """仅 Y 轴移动（绝对坐标，服务端 LiDAR 反馈）"""
         return self._post("MoveOnlyY", {"location_x": ref_x, "location_y": target_y})
 
+    def circle(self, rad_z):
+        return self._post("Circle", {"rad_z": rad_z})
+
 
 # ============================================================
-#  小车定位
+#  移动与校正
 # ============================================================
 
-def _getx():
-    data = rospy.wait_for_message("scan", LaserScan)
-    d = data.ranges[len(data.ranges) // 2]
-    while d == np.inf:
-        data = rospy.wait_for_message("scan", LaserScan)
-        d = data.ranges[len(data.ranges) // 2]
-    return d
+def _move_segment(x1, y1, x2, y2, cli):
+    """轴对齐移动一段"""
+    dx, dy = abs(x2 - x1), abs(y2 - y1)
+    if dx > 0.001 and dy < 0.001:
+        return cli.move_x(x2, y1)
+    elif dy > 0.001 and dx < 0.001:
+        return cli.move_y(y2, x1)
+    return True, None
 
 
-def _gety():
-    data = rospy.wait_for_message("scan", LaserScan)
-    d = data.ranges[len(data.ranges) // 4]
-    while d == np.inf:
-        data = rospy.wait_for_message("scan", LaserScan)
-        d = data.ranges[len(data.ranges) // 4]
-    return d
+def _do_correction(cli, expected_x, expected_y):
+    """坐标校正（用规划坐标前X+右Y做LiDAR闭环）"""
+    for attempt in range(1, MAX_RETRIES + 1):
+        cx, cy = car_position()
+        err = math.hypot(expected_x - cx, expected_y - cy)
+        print(f"  坐标校正 #{attempt}: 期望({expected_x:.3f},{expected_y:.3f}) "
+              f"实际({cx:.3f},{cy:.3f}) 误差{err:.3f}m")
+        if err <= POS_THRESHOLD:
+            print("  ✓ 已收敛")
+            break
+        cdx, cdy = cx - expected_x, cy - expected_y
+        cli.move_relative(cdx, cdy)
+        time.sleep(0.3)
+    else:
+        print(f"  ⚠ 达到最大重试")
 
 
-def car_position():
-    return _getx(), _gety()
+def _do_target_correction(cli, pid, target_info):
+    """用校正光束坐标做精校（仅点位 1~4）"""
+    if "correct" not in target_info:
+        return
+    stored_x, stored_y = target_info["correct"]
+    curr_x, curr_y = _read_correct_beams(pid)
+    if curr_x is None:
+        return
+
+    # 前/后光束 → 绝对 X；左/右光束 → 绝对 Y
+    beam_cfg = {
+        1: ("front", "right"),
+        2: ("rear",  "right"),
+        3: ("rear",  "left"),
+        4: ("front", "left"),
+    }
+    x_type, y_type = beam_cfg[pid]
+
+    # 前光束直接是绝对 X，后光束需反转
+    abs_curr_x = curr_x if x_type == "front" else ROOM_X_MAX - curr_x
+    abs_stored_x = stored_x if x_type == "front" else ROOM_X_MAX - stored_x
+    # 右光束直接是绝对 Y，左光束需反转
+    abs_curr_y = curr_y if y_type == "right" else ROOM_Y_MAX - curr_y
+    abs_stored_y = stored_y if y_type == "right" else ROOM_Y_MAX - stored_y
+
+    cdx = abs_curr_x - abs_stored_x
+    cdy = abs_curr_y - abs_stored_y
+
+    print(f"  精校: 存储({stored_x:.3f},{stored_y:.3f}) → 绝对({abs_stored_x:.3f},{abs_stored_y:.3f})")
+    print(f"        当前({curr_x:.3f},{curr_y:.3f}) → 绝对({abs_curr_x:.3f},{abs_curr_y:.3f})")
+    print(f"        底盘位移: ({cdx:+.3f}, {cdy:+.3f})")
+
+    if abs(cdx) > POS_THRESHOLD or abs(cdy) > POS_THRESHOLD:
+        cli.move_relative(cdx, cdy)
+
+
+# ============================================================
+#  表格打印
+# ============================================================
+
+def _print_obstacle_table(obstacles):
+    """表格形式打印障碍物"""
+    if not obstacles:
+        print("  障碍物: 无")
+        return
+    print(f"\n  障碍物 ({len(obstacles)}个):")
+    print(f"  {'─' * 40}")
+    print(f"  {'#':<4} {'X':<10} {'Y':<10} {'距离':<10}")
+    print(f"  {'─' * 40}")
+    for i, obs in enumerate(obstacles, 1):
+        print(f"  {i:<4} {obs['x']:<10.3f} {obs['y']:<10.3f} {obs['distance']:<10.3f}")
+    print(f"  {'─' * 40}")
+
+
+def _print_waypoint_table(waypoints, correction_points):
+    """表格形式打印路径点"""
+    cp_indices = {p["index"]: p for p in correction_points}
+    print(f"\n  路径点 ({len(waypoints)}个):")
+    print(f"  {'─' * 45}")
+    print(f"  {'#':<4} {'X':<10} {'Y':<10} {'类型':<8} {'备注'}")
+    print(f"  {'─' * 45}")
+    for i, (x, y) in enumerate(waypoints):
+        if i == 0:
+            kind = "起点"
+        elif i == len(waypoints) - 1:
+            kind = "终点"
+        else:
+            kind = "中间"
+
+        if i in cp_indices:
+            cp = cp_indices[i]
+            note = "✓可校正" if cp["safe"] else "⚠有遮挡"
+        else:
+            note = ""
+
+        print(f"  {i:<4} {x:<10.3f} {y:<10.3f} {kind:<8} {note}")
+    print(f"  {'─' * 45}")
 
 
 # ============================================================
@@ -111,187 +246,115 @@ def car_position():
 # ============================================================
 
 def main():
-    rospy.init_node("full_pipeline_test", anonymous=True)
+    from path_planner import plan_path
+    from target_points import load_targets
+    from forbidden_zones import load_forbidden_zones
+    from action_for_each_target import get_actions
+
+    # ── 初始化 ──
+    rospy.init_node("full_pipeline", anonymous=True)
     rospy.wait_for_message("scan", LaserScan, timeout=5.0)
 
     cli = _Client()
     cli.reset()
+    cli.set_baseline()
 
-    # 目标点
-    if len(sys.argv) >= 3:
-        tx, ty = float(sys.argv[1]), float(sys.argv[2])
-    else:
-        print("用法: python3 test_full_pipeline.py <target_x> <target_y>")
-        sys.exit(1)
+    # 记录起点
+    start_x, start_y = car_position()
+    print(f"\n起点已记录: ({start_x:.3f}, {start_y:.3f})")
 
-    # ────────────────────────────────────────────────
-    #  阶段一：检测
-    # ────────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("  阶段一：环境检测")
-    print("=" * 60)
-
-    # baseline
-    from obstacle_detector import detect_obstacles
-    from lidar_utils import getsum
-
-    # 获取小车位置
-    cx, cy = car_position()
-    print(f"\n[1] 小车位置: X={cx:.3f}, Y={cy:.3f}")
-
-    print("\n[2] 设定校正基准 (SetBaseline)...")
-    ok, _ = cli.set_baseline()
-    baseline_sum = getsum()
-    print(f"  {'✓' if ok else '✗'} 基准距离和: {baseline_sum:.3f} m")
-
-    input("\n>>> 基准已设定，按 Enter 继续检测障碍物...")
-
-    # 障碍物检测
-    print(f"\n[3] 检测障碍物...")
-    obstacles, diag = detect_obstacles(cx, cy)
-    filtered = diag.get('filtered_out', 0)
-    print(f"  雷达诊断: 有效 {diag['valid_beams']}/{diag['total_beams']} 光束, "
-          f"突变 {diag['jump_count']} 点, "
-          f"距离范围 {diag['dist_min']}~{diag['dist_max']}m"
-          + (f", 过滤越界 {filtered} 个" if filtered else ""))
-
-    if obstacles:
-        print(f"\n  检测到 {len(obstacles)} 个障碍物:")
-        for obs in obstacles:
-            print(f"    · ({obs['x']:.3f}, {obs['y']:.3f})  "
-                  f"距离={obs['distance']:.3f}m  角度={obs['angle_deg']:.1f}°  "
-                  f"光束数={obs['beam_count']}")
-    else:
-        print(f"\n  未检测到障碍物 ✓")
-
-    # 禁区加载
-    from forbidden_zones import load_forbidden_zones
+    # 加载配置
+    targets = load_targets()
+    if not targets:
+        print("未找到 target_points.json，请先运行 target_points.py 设置点位")
+        return
     zones = load_forbidden_zones()
     if zones:
-        print(f"\n已加载禁区配置: {len(zones)} 个禁区（障碍物过滤用）")
+        print(f"已加载 {len(zones)} 个禁区")
 
-    # ────────────────────────────────────────────────
-    #  阶段二：路径规划
-    # ────────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("  阶段二：路径规划")
-    print("=" * 60)
+    print("\n" + "=" * 50)
+    print("  输入 1~6 前往目标点，7 返回起点，Q 退出")
+    print("=" * 50)
 
-    from path_planner import plan_path
-
-    print(f"\n[4] 规划路径: ({cx:.3f}, {cy:.3f}) → ({tx:.2f}, {ty:.2f})")
-    result = plan_path(cx, cy, tx, ty, cx, cy, forbidden_zones=zones)
-
-    wp = result["waypoints"]
-    cp = result.get("correction_points", [])
-    cp_indices = {p["index"] for p in cp}
-
-    print(f"  路径方案: {result['path_name']}")
-    print(f"  得分: {result.get('score', '-')}  距障碍物: {result['obstacle_margin']}m  "
-          f"{'✓ 安全' if result['safe'] else '⚠ 危险'}")
-
-    # 表格
-    print(f"\n  路径点与校正点:")
-    print(f"  {'─' * 55}")
-    print(f"  {'序号':<6} {'X (m)':<12} {'Y (m)':<12} {'类型':<12} {'备注'}")
-    print(f"  {'─' * 55}")
-    for i, (x, y) in enumerate(wp):
-        if i == 0:
-            kind = "起点"
-        elif i == len(wp) - 1:
-            kind = "终点"
-        else:
-            kind = "中间点"
-
-        note = ""
-        if i in cp_indices:
-            cpi = next(p for p in cp if p["index"] == i)
-            note = "★ 可校正" if cpi["safe"] else "★ 校正(有遮挡)"
-        print(f"  {i:<6} {x:<12.3f} {y:<12.3f} {kind:<12} {note}")
-    print(f"  {'─' * 55}")
-
-    if cp:
-        print(f"\n  校正点汇总 ({len(cp)} 个):")
-        for p in cp:
-            safe_str = "安全" if p["safe"] else "有遮挡"
-            print(f"    #{p['index']} ({p['x']:.3f},{p['y']:.3f}) [{p['type']}] — {safe_str}")
-
-    # ────────────────────────────────────────────────
-    input("\n>>> 路径规划完成，按 Enter 开始执行移动...")
-
-    # ────────────────────────────────────────────────
-    #  阶段三：执行（MoveOnlyX/Y 绝对移动 + 强制终点校正）
-    # ────────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("  阶段三：执行移动")
-    print("=" * 60)
-
-    POS_THRESHOLD = 0.08
-    MAX_RETRIES = 5
-
-    for i in range(len(wp) - 1):
-        x1, y1 = wp[i]
-        x2, y2 = wp[i + 1]
-        dx, dy = abs(x2 - x1), abs(y2 - y1)
-
-        # ── 中间校正点 ──
-        if i in cp_indices:
-            cpi = next(p for p in cp if p["index"] == i)
-            if cpi["safe"]:
-                print(f"\n--- ★ 校正点 #{i} ({x1:.3f}, {y1:.3f}) [{cpi['type']}] ---")
-                # 角度校正
-                print(f"  角度校正 (SyncYaw)...")
-                sum_before = getsum()
-                ok, _ = cli.sync_yaw()
-                sum_after = getsum()
-                print(f"  LiDAR距离和: {sum_before:.3f}m → {sum_after:.3f}m  {'✓' if ok else '✗'}")
-                # 坐标校正：LiDAR 偏差 → 底盘坐标系相对位移（底盘+x=LiDAR X↓，所以取反）
-                for retry in range(1, MAX_RETRIES + 1):
-                    cx, cy = car_position()
-                    ex, ey = x1 - cx, y1 - cy           # LiDAR 偏差
-                    cdx, cdy = cx - x1, cy - y1          # 底盘相对位移（取反）
-                    err = math.hypot(ex, ey)
-                    print(f"  坐标校正 #{retry}: 期望({x1:.3f},{y1:.3f}) 实际({cx:.3f},{cy:.3f}) 误差{err:.3f}m")
-                    if err <= POS_THRESHOLD:
-                        print(f"  ✓ 坐标已收敛")
-                        break
-                    print(f"    补底盘位移: ({cdx:+.3f}, {cdy:+.3f})")
-                    cli.move_relative(cdx, cdy)
-                    time.sleep(0.3)
-                else:
-                    print(f"  ⚠ 坐标校正未收敛，继续执行")
-            else:
-                print(f"\n--- 校正点 #{i} 有遮挡，跳过 ---")
-
-        # ── 移动段（只用 MoveOnlyX 或 MoveOnlyY，服务端 LiDAR 闭环） ──
-        if dx > 0.001 and dy < 0.001:
-            direction = f"MoveOnlyX → X={x2:.3f} (ref Y={y1:.3f})"
-            print(f"  移动: ({x1:.3f},{y1:.3f}) → ({x2:.3f},{y2:.3f})  [{direction}]")
-            ok, resp = cli.move_x(x2, y1)
-        elif dy > 0.001 and dx < 0.001:
-            direction = f"MoveOnlyY → Y={y2:.3f} (ref X={x1:.3f})"
-            print(f"  移动: ({x1:.3f},{y1:.3f}) → ({x2:.3f},{y2:.3f})  [{direction}]")
-            ok, resp = cli.move_y(y2, x1)
-        else:
-            ok = True
-
-        if ok:
-            print(f"  ✓ 移动完成")
-        else:
-            print(f"  ✗ 移动失败: {resp.get('errorMessage', resp.get('error', '?'))}")
+    while True:
+        choice = input("\n>>> ").strip()
+        if choice.upper() == 'Q':
+            print("退出。")
             break
 
-        time.sleep(0.3)
+        try:
+            num = int(choice)
+        except ValueError:
+            print("无效输入")
+            continue
 
-    # ── 完成 ──
-    final_x, final_y = car_position()
-    print(f"\n{'=' * 60}")
-    print(f"  全流程测试完成")
-    print(f"  起点: ({cx:.3f}, {cy:.3f})")
-    print(f"  目标: ({tx:.2f}, {ty:.2f})")
-    print(f"  终点: ({final_x:.3f}, {final_y:.3f})")
-    print(f"  终点误差: {math.hypot(tx-final_x, ty-final_y):.3f}m")
-    print(f"{'=' * 60}")
+        # 确定目标坐标
+        if num == 7:
+            tx, ty = start_x, start_y
+            target_info = None
+            actions = []
+            label = "起点"
+        elif 1 <= num <= 6:
+            t = targets[num - 1]
+            tx, ty = t["plan"]
+            target_info = t
+            actions = get_actions(num)
+            label = f"目标点 {num}"
+        else:
+            print("无效输入 (1~7)")
+            continue
+
+        # 当前位置
+        cx, cy = car_position()
+        print(f"\n{'─' * 40}")
+        print(f"  {label}: ({tx:.2f}, {ty:.2f})  当前: ({cx:.3f}, {cy:.3f})")
+
+        if abs(cx - tx) < 0.05 and abs(cy - ty) < 0.05:
+            print("  已在目标点，跳过移动")
+        else:
+            # 规划
+            result = plan_path(cx, cy, tx, ty, cx, cy, forbidden_zones=zones)
+            wp = result["waypoints"]
+            cp = result.get("correction_points", [])
+            cp_indices = {p["index"]: p for p in cp}
+
+            _print_obstacle_table(result.get("obstacles", []))
+            _print_waypoint_table(wp, cp)
+
+            # 执行移动
+            for i in range(len(wp) - 1):
+                x1, y1 = wp[i]
+                x2, y2 = wp[i + 1]
+
+                # 中间校正点
+                if i in cp_indices and cp_indices[i]["safe"]:
+                    print(f"\n  ● 校正点 #{i} ({x1:.3f}, {y1:.3f})")
+                    _do_correction(cli, x1, y1)
+
+                ok, resp = _move_segment(x1, y1, x2, y2, cli)
+                if not ok:
+                    print(f"  ✗ 移动失败: {resp.get('errorMessage', resp.get('error', '?'))}")
+                    break
+                time.sleep(STEP_DELAY)
+
+        # ── 到达后按顺序执行动作 ──
+        print(f"\n  到达 {label}")
+
+        for step, act in enumerate(actions):
+            t = act["type"]
+            if t == "correct":
+                if target_info and "correct" in target_info:
+                    _do_target_correction(cli, num, target_info)
+                else:
+                    _do_correction(cli, tx, ty)
+            elif t == "rotate":
+                deg = act.get("value", 0)
+                print(f"  → 旋转 {deg}°")
+                cli.circle(math.radians(deg))
+            elif t == "stay":
+                input("  >>> 按 Enter 继续下一步...")
+
+        print(f"  ✓ {label} 完成")
 
     cli.sess.close()
 
