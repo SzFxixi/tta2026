@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-"""
-统一配置加载器 — 从 config.yaml 读取所有参数。
-
-用法:
-    from utils.config_loader import cfg
-    print(cfg.room.x_min)            # → 0.1
-    print(cfg.obstacle.jump_threshold)  # → 0.3
-"""
-
 import os
 import re
 

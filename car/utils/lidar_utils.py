@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# LiDAR 工具函数
-
 import rospy
 import numpy as np
 from sensor_msgs.msg import LaserScan

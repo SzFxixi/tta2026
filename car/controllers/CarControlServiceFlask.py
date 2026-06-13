@@ -2,7 +2,6 @@
 # coding=utf-8
 from flask import Flask, request, jsonify
 import socket
-import sys
 import time
 import rospy
 import numpy as np

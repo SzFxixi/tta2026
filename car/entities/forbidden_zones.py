@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-"""
-禁区管理模块 — 支持交互式设置、保存/加载、追加、删除。全部使用绝对坐标。
-
-配置文件 forbidden_zones.json 格式:
-    {
-        "zones": [
-            [xmin, xmax, ymin, ymax],
-            ...
-        ]
-    }
-
-用法:
-    from entities.forbidden_zones import (setup_forbidden_zones, load_forbidden_zones,
-                                  add_forbidden_zone, delete_forbidden_zone,
-                                  point_in_forbidden, segment_crosses_forbidden)
-"""
-
 import json
 import os
 import math

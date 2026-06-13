@@ -1,32 +1,4 @@
 #!/usr/bin/env python3
-"""
-目标点位坐标管理 — 交互式设置 6 个目标点位，每点存储两套坐标：
-
-  规划坐标: 统一使用前光束(X) + 右侧光束(Y) 读取，用于路径规划
-  校正坐标: 根据点位位置使用不同光束组合，存原始光束距离（不做房间尺寸减法），
-            仅点位 1~4 存储，用于到位后的精校
-
-点位校正光束:
-  1: 前光束 + 右侧光束  (同规划)
-  2: 后光束 + 右侧光束
-  3: 后光束 + 左侧光束
-  4: 前光束 + 左侧光束
-  5~6: 无校正坐标 (仅规划)
-
-配置文件 target_points.json 格式:
-    {
-        "points": [
-            {"plan": [x1, y1], "correct": [front, right]},
-            {"plan": [x2, y2], "correct": [rear, right]},
-            ...
-        ]
-    }
-
-用法:
-    python3 target_points.py                # 交互式命令行工具
-    from entities.target_points import load_targets  # 在其他模块中加载
-"""
-
 import json
 import os
 import numpy as np

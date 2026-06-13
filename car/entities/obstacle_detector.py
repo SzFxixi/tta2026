@@ -29,11 +29,6 @@ ROOM_Y_MAX = cfg.obstacle.filter_y_max
 #  工具函数
 # ============================================================
 
-def point_in_rect(px, py, xmin, xmax, ymin, ymax):
-    """点 (px, py) 是否在矩形内"""
-    return xmin <= px <= xmax and ymin <= py <= ymax
-
-
 def _compute_diag(n_beams, valid_count, jump_count, all_dists):
     """组装诊断字典"""
     n = len(all_dists)

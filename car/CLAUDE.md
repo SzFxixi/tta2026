@@ -191,9 +191,9 @@ Uses 0.00001m tolerance (vs 0.08m for all others). LiDAR noise can cause infinit
 
 Objects near detection thresholds (JUMP_THRESHOLD=0.3, CLUSTER_MIN_BEAMS=3) are sometimes missed. Sensitive to LiDAR noise and angle.
 
-### Duplicated LiDAR reading functions
+### Duplicated LiDAR reading functions (intentional)
 
-`getx`/`gety`/`getsum` are duplicated across `CarControlServiceFlask.py`, `path_planner.py`, `run.py`, and `test_obstacle_detector.py`. Changes must be applied to all copies.
+`getx`/`gety`/`getsum` are duplicated across `controllers/CarControlServiceFlask.py`, `entities/path_planner.py`, `controllers/run.py`, and `tests/test_obstacle_detector.py`. **This is intentional** — sharing a single LiDAR reader via import would cause multiple modules to contend for the same ROS topic `/scan`, interfering with chassis communication. Each module reads LiDAR independently. Changes to sampling strategy or inf handling must be applied to all copies.
 
 ### Correction may trigger when LiDAR is blocked
 

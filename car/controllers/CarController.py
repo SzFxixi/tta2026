@@ -1,7 +1,7 @@
 import requests
 import json
 import time
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict
 class CarController:
     
     def __init__(self, ip: str = "10.203.94.227", port: int = 5000):

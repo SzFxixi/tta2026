@@ -463,28 +463,6 @@ def plan_path(start_x, start_y, end_x, end_y,
 
 
 
-# ============================================================
-#  便捷入口
-# ============================================================
-
-def plan_path_to(target_x, target_y,
-                 forbidden_zones=None,
-                 num_waypoints=0,
-                 jump_threshold=None,
-                 cluster_min_beams=None):
-    """从当前小车位置规划到终点的避障路径"""
-    car_x, car_y = get_car_position()
-    return plan_path(
-        start_x=car_x, start_y=car_y,
-        end_x=target_x, end_y=target_y,
-        car_x=car_x, car_y=car_y,
-        forbidden_zones=forbidden_zones,
-        num_waypoints=num_waypoints,
-        jump_threshold=jump_threshold,
-        cluster_min_beams=cluster_min_beams,
-    )
-
-
 if __name__ == "__main__":
     import sys
 
@@ -504,7 +482,11 @@ if __name__ == "__main__":
     print(f"小车位置: X={car_x:.3f}  Y={car_y:.3f}")
     print(f"终点: ({ex:.1f}, {ey:.1f})")
 
-    result = plan_path_to(ex, ey, num_waypoints=num)
+    result = plan_path(
+        start_x=car_x, start_y=car_y,
+        end_x=ex, end_y=ey,
+        car_x=car_x, car_y=car_y,
+        num_waypoints=num)
 
     print(f"\n路径: {result['path_name']}")
     print(f"得分: {result.get('score', '-')}")
