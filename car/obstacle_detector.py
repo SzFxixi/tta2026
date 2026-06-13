@@ -242,10 +242,30 @@ def _filter_out_of_bounds(obstacles):
 
 
 # ============================================================
+#  禁区过滤
+# ============================================================
+
+def _filter_forbidden_zones(obstacles, forbidden_zones):
+    """过滤落入禁区内的障碍物（禁区内的不是障碍物，是墙/平台）。"""
+    if not forbidden_zones:
+        return obstacles, 0
+    from forbidden_zones import point_in_forbidden
+    kept = []
+    dropped = 0
+    for obs in obstacles:
+        if point_in_forbidden(obs['x'], obs['y'], forbidden_zones):
+            dropped += 1
+        else:
+            kept.append(obs)
+    return kept, dropped
+
+
+# ============================================================
 #  主入口
 # ============================================================
 
 def detect_obstacles(car_x, car_y,
+                     forbidden_zones=None,
                      jump_threshold=JUMP_THRESHOLD,
                      cluster_min_beams=CLUSTER_MIN_BEAMS):
     """通过 LiDAR 距离突变检测障碍物。返回 (obstacles, diagnostics)。"""
@@ -275,6 +295,8 @@ def detect_obstacles(car_x, car_y,
     obstacles = _compute_obstacles(clusters, hit_dist, hit_angles, car_x, car_y, n_beams)
     obstacles, dropped = _filter_out_of_bounds(obstacles)
     diag['filtered_out'] = dropped
+    obstacles, filtered_fz = _filter_forbidden_zones(obstacles, forbidden_zones)
+    diag['filtered_forbidden'] = filtered_fz
     return obstacles, diag
 
 

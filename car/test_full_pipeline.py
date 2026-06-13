@@ -164,6 +164,12 @@ def main():
     else:
         print(f"\n  未检测到障碍物 ✓")
 
+    # 禁区加载
+    from forbidden_zones import load_forbidden_zones
+    zones = load_forbidden_zones()
+    if zones:
+        print(f"\n已加载禁区配置: {len(zones)} 个禁区（障碍物过滤用）")
+
     # ────────────────────────────────────────────────
     #  阶段二：路径规划
     # ────────────────────────────────────────────────
@@ -174,7 +180,7 @@ def main():
     from path_planner import plan_path
 
     print(f"\n[4] 规划路径: ({cx:.3f}, {cy:.3f}) → ({tx:.2f}, {ty:.2f})")
-    result = plan_path(cx, cy, tx, ty, cx, cy)
+    result = plan_path(cx, cy, tx, ty, cx, cy, forbidden_zones=zones)
 
     wp = result["waypoints"]
     cp = result.get("correction_points", [])
@@ -277,35 +283,8 @@ def main():
 
         time.sleep(0.3)
 
-    # ── 终点：强制坐标校正 ──
-    final_x, final_y = car_position()
-    print(f"\n--- 终点强制坐标校正 ---")
-    print(f"  目标: ({tx:.2f}, {ty:.2f})")
-    print(f"  到达: ({final_x:.3f}, {final_y:.3f})")
-    print(f"  LiDAR距离和: {getsum():.3f}m")
-
-    for retry in range(1, MAX_RETRIES + 1):
-        cx, cy = car_position()
-        ex, ey = tx - cx, ty - cy            # LiDAR 偏差
-        cdx, cdy = cx - tx, cy - ty           # 底盘相对位移（取反）
-        err = math.hypot(ex, ey)
-        print(f"  校正 #{retry}: 期望({tx:.3f},{ty:.3f}) 实际({cx:.3f},{cy:.3f}) "
-              f"误差{err:.3f}m (阈值{POS_THRESHOLD:.3f}m)")
-        if err <= POS_THRESHOLD:
-            print(f"  ✓ 终点坐标已收敛!")
-            break
-        print(f"  → 补底盘位移: ({cdx:+.3f}, {cdy:+.3f})")
-        ok, _ = cli.move_relative(cdx, cdy)
-        if not ok:
-            print(f"  ✗ 纠正失败")
-            break
-        time.sleep(0.3)
-        final_x, final_y = car_position()
-    else:
-        print(f"  ⚠ 达到最大重试 {MAX_RETRIES} 次")
-        final_x, final_y = car_position()
-
     # ── 完成 ──
+    final_x, final_y = car_position()
     print(f"\n{'=' * 60}")
     print(f"  全流程测试完成")
     print(f"  起点: ({cx:.3f}, {cy:.3f})")
