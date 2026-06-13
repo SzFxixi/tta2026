@@ -41,11 +41,11 @@ Logs go to `~/car2_logs/`.
 | `CarControlServiceFlask.py` | Main Flask server (port 5000), ROS node, chassis TCP client. Exposes 9 REST endpoints. | ROS, Flask, LiDAR |
 | `CarController.py` | Remote HTTP client library with retry + TaskId sync | `requests` |
 | `obstacle_detector.py` | Detect obstacles from LiDAR distance-jump analysis (5-stage pipeline: analyze → detect jumps → expand seeds → cluster → filter) | ROS, numpy |
-| `path_planner.py` | A* path planning with axis-aligned edges, avoiding detected obstacles and forbidden zones. Also plans correction points along the path. | `obstacle_detector`, `forbidden_zones`, ROS, numpy |
+| `path_planner.py` | A* path planning with axis-aligned edges, avoiding detected obstacles. Also plans correction points along the path. | `obstacle_detector`, ROS, numpy |
 | `lidar_utils.py` | LiDAR utility: `getsum()` — averaged front+rear beam distance sum used for angle diagnostics in `test_full_pipeline.py`. | ROS, numpy |
-| `forbidden_zones.py` | Forbidden zone (no-go area) management: interactive setup, save/load/edit via `forbidden_zones.json`. Provides `point_in_forbidden()` and `segment_crosses_forbidden()` geometry checks used by `path_planner.py`. | `path_planner` (for `get_car_position`) |
-| `target_points.py` | Interactive tool to set 7 target point coordinates, saved to `target_points.json`. | `path_planner` (for `get_car_position`) |
-| `actions.py` | Per-point action config (rotate angle, stay duration) for 7 points. Pure data module — no runtime dependencies. | None |
+| `forbidden_zones.py` | Forbidden zone (no-go area) management: interactive setup, save/load/edit via `forbidden_zones.json`. Uses absolute coordinates. Currently decoupled from path_planner — standalone tool. | ROS, LiDAR |
+| `target_points.py` | Interactive tool to set 6 target point coordinates. Each point uses a different LiDAR beam combo (front/rear X, right/left Y) depending on car orientation at that position. Saved to `target_points.json`. | ROS, LiDAR |
+| `actions.py` | Per-point action config (rotate angle, stay duration) for 6 points. Pure data module — no runtime dependencies. | None |
 | `path_simulator.py` | Standalone matplotlib GUI simulator for A* path planning. Click to place start/goal/obstacles/no-go zones, see paths and correction points in real time. Runs without ROS on any machine. | matplotlib, numpy |
 | `LidarTest.py` | Standalone wall-fitting via PCA + linear regression (debug/diagnostic tool, not used by any other module) | sklearn, ROS |
 
@@ -79,9 +79,7 @@ Every API call carries a `TaskId`. The server expects strictly `CurrentTaskID + 
 ```
 obstacle_detector  (standalone — LiDAR → obstacle list)
        ↑
-forbidden_zones    (standalone — JSON config → geometry checks)
-       ↑
-path_planner       (depends on both — obstacles + forbidden zones → safe A* path + correction points)
+path_planner       (depends on obstacle_detector → safe A* path + correction points)
        ↑
 test_full_pipeline (entry point — calls path_planner → Flask endpoints to execute)
 ```

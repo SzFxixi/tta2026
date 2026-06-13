@@ -20,7 +20,6 @@ ACTIONS = {
     4:  {"rotate": None, "stay": None},
     5:  {"rotate": None, "stay": None},
     6:  {"rotate": None, "stay": None},
-    7:  {"rotate": None, "stay": None},
 }
 
 # ============================================================
