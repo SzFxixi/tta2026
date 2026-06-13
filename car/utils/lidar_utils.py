@@ -6,7 +6,7 @@ import numpy as np
 from sensor_msgs.msg import LaserScan
 
 
-from config_loader import cfg
+from utils.config_loader import cfg
 
 LIDAR_SAMPLES = cfg.lidar.samples
 

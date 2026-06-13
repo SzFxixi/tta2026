@@ -10,7 +10,7 @@ from sensor_msgs.msg import LaserScan
 #  参数 — 从 config.yaml 读取
 # ============================================================
 
-from config_loader import cfg
+from utils.config_loader import cfg
 
 CAR_IP = cfg.client.car_ip
 CAR_PORT = cfg.client.car_port
@@ -311,10 +311,10 @@ def _print_waypoint_table(waypoints, correction_points):
 # ============================================================
 
 def main():
-    from path_planner import plan_path
-    from target_points import load_targets
-    from forbidden_zones import load_forbidden_zones
-    from action_for_each_target import get_actions
+    from entities.path_planner import plan_path
+    from entities.target_points import load_targets
+    from entities.forbidden_zones import load_forbidden_zones
+    from entities.action_for_each_target import get_actions
 
     # ── 初始化 ──
     rospy.init_node("full_pipeline", anonymous=True)

@@ -25,7 +25,7 @@ Logs go to `~/car2_logs/`.
 All tunable parameters are in `config.yaml` — room bounds, chassis IP, obstacle detection thresholds, path planning margins, client settings, etc. Loaded by `config_loader.py`:
 
 ```python
-from config_loader import cfg
+from utils.config_loader import cfg
 margin = cfg.path_planning.obstacle_margin   # → 0.5
 ip = cfg.client.car_ip                       # → "10.152.203.227"
 ```
@@ -42,20 +42,46 @@ Changing `config.yaml` does not require code edits. All Python modules import fr
 - **Movement feedback**: Commands move the car, then `/MoveOnlyX` and `/MoveOnlyY` poll `getx()`/`gety()` for LiDAR closed-loop correction (0.08m tolerance, up to 5 retries).
 - **Angle detection**: `getsum()` = average of 5 front+rear beam samples. Rotation angle = `arccos(baseline / current_sum)`.
 
+### Directory structure
+
+```
+car/
+├── config.yaml              # 全局参数
+├── start.sh                 # 一键启动
+├── controllers/             # 控制与入口
+│   ├── CarControlServiceFlask.py   # Flask 服务端
+│   ├── CarController.py            # 远程客户端库
+│   └── run.py                      # 主程序入口
+├── entities/                # 业务逻辑
+│   ├── obstacle_detector.py        # 障碍物检测
+│   ├── path_planner.py             # A* 路径规划
+│   ├── forbidden_zones.py          # 禁区管理
+│   ├── forbidden_zones.json        # 禁区数据
+│   ├── target_points.py            # 目标点管理
+│   ├── target_points.json          # 目标点数据
+│   └── action_for_each_target.py   # 点位动作配置
+├── utils/                   # 工具
+│   ├── config_loader.py            # 配置加载器
+│   └── lidar_utils.py              # LiDAR 工具函数
+└── tests/                   # 测试
+    ├── test_obstacle_detector.py
+    └── test_path_planner.py
+```
+
 ### Core modules
 
 | Module | Role |
 |--------|------|
-| `config.yaml` + `config_loader.py` | All parameters in one place; `cfg.xxx.yyy` dot access |
-| `CarControlServiceFlask.py` | Flask server (port 5000), ROS node, chassis TCP. 9 REST endpoints. |
-| `CarController.py` | Remote HTTP client library with retry + TaskId sync (not used by pipeline) |
-| `obstacle_detector.py` | 5-stage obstacle detection: analyze beams → detect jumps → expand seeds → cluster → filter (bounds + forbidden zones) |
-| `path_planner.py` | A* path planning with axis-aligned edges. Avoids obstacles, forbidden zones, and walls. Plans correction points. Self-loads forbidden zones if not passed. |
-| `forbidden_zones.py` | Forbidden zone management CLI. Saves absolute-coordinate rectangles to `forbidden_zones.json`. Used by both `obstacle_detector` (filter false obstacles) and `path_planner` (geometry avoidance). |
-| `target_points.py` | Interactive 6-point coordinate recording. Each point stores dual coordinates: `plan` (front+right beams, for path planning) and `correct` (point-specific beams per table below, for fine correction). Saved to `target_points.json`. |
-| `action_for_each_target.py` | Per-point sequential action list (correct / rotate / stay). Actions execute in order after reaching target. |
-| `lidar_utils.py` | `getsum()` — averaged front+rear beam distance sum, used by `run.py`. |
-| `path_simulator.py` | matplotlib GUI simulator for A* path planning. No ROS required. |
+| `config.yaml` + `utils/config_loader.py` | All parameters in one place; `cfg.xxx.yyy` dot access |
+| `controllers/CarControlServiceFlask.py` | Flask server (port 5000), ROS node, chassis TCP. 9 REST endpoints. |
+| `controllers/CarController.py` | Remote HTTP client library with retry + TaskId sync (not used by pipeline) |
+| `controllers/run.py` | **Main entry point**. Interactive loop: input 1~6 go to target, 7 return start, Q quit. |
+| `entities/obstacle_detector.py` | 5-stage obstacle detection: analyze → jump detect → expand → cluster → filter |
+| `entities/path_planner.py` | A* path planning. Avoids obstacles, forbidden zones, walls. Self-loads zones. |
+| `entities/forbidden_zones.py` | Forbidden zone CLI + geometry checks. Saves to `forbidden_zones.json`. |
+| `entities/target_points.py` | Interactive 6-point recording. Dual coords per point. Saves to `target_points.json`. |
+| `entities/action_for_each_target.py` | Per-point sequential action list (correct / rotate / stay). |
+| `utils/lidar_utils.py` | `getsum()` — averaged front+rear beam distance for angle diagnostics. |
 
 ### Points and correction beams
 

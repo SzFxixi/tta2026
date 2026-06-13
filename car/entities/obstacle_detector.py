@@ -11,7 +11,7 @@ from sensor_msgs.msg import LaserScan
 #  参数 — 从 config.yaml 读取
 # ============================================================
 
-from config_loader import cfg
+from utils.config_loader import cfg
 
 LIDAR_TIMEOUT = cfg.obstacle.lidar_timeout
 JUMP_THRESHOLD = cfg.obstacle.jump_threshold
@@ -242,7 +242,7 @@ def _filter_forbidden_zones(obstacles, forbidden_zones):
     """过滤落入禁区内的障碍物（禁区内的不是障碍物，是墙/平台）。"""
     if not forbidden_zones:
         return obstacles, 0
-    from forbidden_zones import point_in_forbidden
+    from entities.forbidden_zones import point_in_forbidden
     kept = []
     dropped = 0
     for obs in obstacles:

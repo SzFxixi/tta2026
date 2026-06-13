@@ -11,7 +11,7 @@
     }
 
 用法:
-    from forbidden_zones import (setup_forbidden_zones, load_forbidden_zones,
+    from entities.forbidden_zones import (setup_forbidden_zones, load_forbidden_zones,
                                   add_forbidden_zone, delete_forbidden_zone,
                                   point_in_forbidden, segment_crosses_forbidden)
 """
@@ -73,7 +73,7 @@ def setup_forbidden_zones():
     交互式设置禁区（覆盖已有配置）。移动小车到角点按 Enter，对角点按 Enter。
     按 Q 退出。使用小车当前 LiDAR 绝对坐标。
     """
-    from path_planner import get_car_position
+    from entities.path_planner import get_car_position
 
     zones = []
     print(f"\n禁区设置（绝对坐标）")
@@ -107,7 +107,7 @@ def setup_forbidden_zones():
 
 def add_forbidden_zone():
     """向已有配置追加一个禁区。需要 LiDAR 已就绪且小车在原地。"""
-    from path_planner import get_car_position
+    from entities.path_planner import get_car_position
 
     config = _read_config()
     if config is None:
@@ -206,7 +206,7 @@ if __name__ == "__main__":
     import sys
     import rospy
     from sensor_msgs.msg import LaserScan
-    from path_planner import get_car_position
+    from entities.path_planner import get_car_position
 
     rospy.init_node("forbidden_zones_tool", anonymous=True)
     rospy.wait_for_message("scan", LaserScan, timeout=5.0)

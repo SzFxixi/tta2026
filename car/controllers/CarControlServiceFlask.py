@@ -13,7 +13,7 @@ import signal
 import os
 import math
 
-from config_loader import cfg
+from utils.config_loader import cfg
 
 def getx():
     data = rospy.wait_for_message("scan", LaserScan)

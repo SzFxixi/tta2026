@@ -24,7 +24,7 @@
 
 用法:
     python3 target_points.py                # 交互式命令行工具
-    from target_points import load_targets  # 在其他模块中加载
+    from entities.target_points import load_targets  # 在其他模块中加载
 """
 
 import json

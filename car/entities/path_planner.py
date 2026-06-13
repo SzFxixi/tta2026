@@ -6,15 +6,15 @@ import heapq
 import rospy
 import numpy as np
 from sensor_msgs.msg import LaserScan
-from obstacle_detector import detect_obstacles
-from forbidden_zones import point_in_forbidden, segment_crosses_forbidden
+from entities.obstacle_detector import detect_obstacles
+from entities.forbidden_zones import point_in_forbidden, segment_crosses_forbidden
 
 
 # ============================================================
 #  参数 — 从 config.yaml 读取
 # ============================================================
 
-from config_loader import cfg
+from utils.config_loader import cfg
 
 OBSTACLE_MARGIN = cfg.path_planning.obstacle_margin
 WALL_MARGIN = cfg.path_planning.wall_margin
@@ -82,7 +82,7 @@ def _get_forbidden_zones():
     if not _loaded_zones:
         _loaded_zones = True
         try:
-            from forbidden_zones import load_forbidden_zones
+            from entities.forbidden_zones import load_forbidden_zones
             _cached_zones = load_forbidden_zones()
         except Exception:
             _cached_zones = None

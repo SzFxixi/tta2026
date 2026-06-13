@@ -3,7 +3,7 @@
 统一配置加载器 — 从 config.yaml 读取所有参数。
 
 用法:
-    from config_loader import cfg
+    from utils.config_loader import cfg
     print(cfg.room.x_min)            # → 0.1
     print(cfg.obstacle.jump_threshold)  # → 0.3
 """
@@ -11,7 +11,7 @@
 import os
 import re
 
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "config.yaml")
 
 

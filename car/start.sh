@@ -14,7 +14,7 @@ nohup roslaunch lslidar_driver lslidar_net.launch > $LOG_DIR/lslidar.log 2>&1 &
 sleep 5
 
 echo "[3/3] 启动 CarControlServiceFlask..."
-nohup python3 ~/catkin_ws/src/lsx10/scripts/CarControlServiceFlask.py > $LOG_DIR/flask.log 2>&1 &
+nohup python3 ~/catkin_ws/src/lsx10/car/controllers/CarControlServiceFlask.py > $LOG_DIR/flask.log 2>&1 &
 
 echo ""
 echo "全部启动完成！查看日志："
