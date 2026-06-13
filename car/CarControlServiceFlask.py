@@ -359,7 +359,7 @@ if __name__ == "__main__":
                     "isSuccess": False,
                     "errorCode": -1,
                     "errorMessage": "Task is not consistent",
-                    "expectedTaskId": CurrentTaskID
+                    "expectedTaskId": CurrentTaskID + 1
                 }
                 return jsonify(error_response), 400
 

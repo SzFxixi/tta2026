@@ -25,7 +25,7 @@ from sensor_msgs.msg import LaserScan
 #  配置
 # ============================================================
 
-CAR_IP = "10.26.36.227"
+CAR_IP = "10.152.203.227"
 CAR_PORT = 5000
 BASE_URL = f"http://{CAR_IP}:{CAR_PORT}"
 MOVE_TIMEOUT = 30
@@ -49,12 +49,15 @@ _CORRECT_BEAMS = {
 #  LiDAR 定位
 # ============================================================
 
-def _get_beam(index):
-    data = rospy.wait_for_message("scan", LaserScan)
+def _get_beam(index, timeout=5.0):
+    data = rospy.wait_for_message("scan", LaserScan, timeout=5.0)
     n = len(data.ranges)
     d = data.ranges[index % n]
+    t0 = time.time()
     while d == np.inf:
-        data = rospy.wait_for_message("scan", LaserScan)
+        if time.time() - t0 > timeout:
+            raise TimeoutError(f"LiDAR 光束 {index} 持续 inf，超时 {timeout}s")
+        data = rospy.wait_for_message("scan", LaserScan, timeout=5.0)
         n = len(data.ranges)
         d = data.ranges[index % n]
     return d
@@ -322,6 +325,7 @@ def main():
             _print_waypoint_table(wp, cp)
 
             # 执行移动
+            move_ok = True
             for i in range(len(wp) - 1):
                 x1, y1 = wp[i]
                 x2, y2 = wp[i + 1]
@@ -334,8 +338,13 @@ def main():
                 ok, resp = _move_segment(x1, y1, x2, y2, cli)
                 if not ok:
                     print(f"  ✗ 移动失败: {resp.get('errorMessage', resp.get('error', '?'))}")
+                    move_ok = False
                     break
                 time.sleep(STEP_DELAY)
+
+            if not move_ok:
+                print("  移动未完成，跳过后续动作")
+                continue
 
         # ── 到达后按顺序执行动作 ──
         print(f"\n  到达 {label}")
@@ -350,7 +359,9 @@ def main():
             elif t == "rotate":
                 deg = act.get("value", 0)
                 print(f"  → 旋转 {deg}°")
-                cli.circle(math.radians(deg))
+                ok, resp = cli.circle(math.radians(deg))
+                if not ok:
+                    print(f"  ✗ 旋转失败: {resp}")
             elif t == "stay":
                 input("  >>> 按 Enter 继续下一步...")
 
