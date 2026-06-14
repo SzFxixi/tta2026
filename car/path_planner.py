@@ -1,38 +1,34 @@
 #!/usr/bin/env python3
 # 基于 A* 的避障路径规划，依赖 obstacle_detector
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import math
 import heapq
 import rospy
 import numpy as np
 from sensor_msgs.msg import LaserScan
-from entities.obstacle_detector import detect_obstacles
-from entities.forbidden_zones import point_in_forbidden, segment_crosses_forbidden
+from obstacle_detector import detect_obstacles
+from forbidden_zones import point_in_forbidden, segment_crosses_forbidden
 
 
 # ============================================================
-#  参数 — 从 config.yaml 读取
+#  可调参数
 # ============================================================
 
-from utils.config_loader import cfg
-
-OBSTACLE_MARGIN = cfg.path_planning.obstacle_margin
-WALL_MARGIN = cfg.path_planning.wall_margin
-GRID_EXPAND = cfg.path_planning.grid_expand
-GRID_X_STEP = cfg.path_planning.grid_x_step
-GRID_Y_STEP = cfg.path_planning.grid_y_step
-COST_DIST_WEIGHT = cfg.path_planning.cost_dist_weight
-COST_RISK_WEIGHT = cfg.path_planning.cost_risk_weight
-CORRECTION_CORRIDOR_WIDTH = cfg.path_planning.correction_corridor_width
-CORRECTION_MIN_INTERVAL = cfg.path_planning.correction_min_interval
-ROOM_X_MIN = cfg.room.x_min
-ROOM_Y_MIN = cfg.room.y_min
-ROOM_X_MAX = cfg.room.x_max
-ROOM_Y_MAX = cfg.room.y_max
-X_OFFSET = cfg.room.x_offset
-Y_OFFSET = cfg.room.y_offset
+OBSTACLE_MARGIN = 0.5
+WALL_MARGIN = 0.5
+GRID_EXPAND = 0.4
+GRID_X_STEP = 0.4
+GRID_Y_STEP = 0.4
+COST_DIST_WEIGHT = 1.0
+COST_RISK_WEIGHT = 0
+CORRECTION_CORRIDOR_WIDTH = 0.5
+CORRECTION_MIN_INTERVAL = 1.0
+ROOM_X_MIN = 0.1
+ROOM_Y_MIN = 0.1
+ROOM_X_MAX = 4.5
+ROOM_Y_MAX = 8.8
+X_OFFSET = 0.0
+Y_OFFSET = 0.0
 
 
 # ============================================================
@@ -84,7 +80,7 @@ def _get_forbidden_zones():
     if not _loaded_zones:
         _loaded_zones = True
         try:
-            from entities.forbidden_zones import load_forbidden_zones
+            from forbidden_zones import load_forbidden_zones
             _cached_zones = load_forbidden_zones()
         except Exception:
             _cached_zones = None
@@ -92,19 +88,11 @@ def _get_forbidden_zones():
 
 
 def _segment_safe(ax, ay, bx, by, obstacles, margin=OBSTACLE_MARGIN,
-                  forbidden_zones=None, start=None, end=None):
-    """线段 AB 到所有障碍物的距离是否都大于 margin，且不穿过禁区。
-       起终点(start/end)豁免禁区检测。"""
+                  forbidden_zones=None):
+    """线段 AB 到所有障碍物的距离是否都大于 margin，且不穿过禁区"""
     for obs in obstacles:
         if _point_to_segment_dist(obs['x'], obs['y'], ax, ay, bx, by) < margin:
             return False
-    # 任一端点是起/终点 → 跳过禁区检测
-    is_a_se = (start and abs(ax - start[0]) < 0.001 and abs(ay - start[1]) < 0.001) or \
-              (end   and abs(ax - end[0])   < 0.001 and abs(ay - end[1])   < 0.001)
-    is_b_se = (start and abs(bx - start[0]) < 0.001 and abs(by - start[1]) < 0.001) or \
-              (end   and abs(bx - end[0])   < 0.001 and abs(by - end[1])   < 0.001)
-    if is_a_se or is_b_se:
-        return True
     zones = forbidden_zones or _get_forbidden_zones()
     if zones and segment_crosses_forbidden(ax, ay, bx, by, zones):
         return False
@@ -112,17 +100,11 @@ def _segment_safe(ax, ay, bx, by, obstacles, margin=OBSTACLE_MARGIN,
 
 
 def _point_safe(px, py, obstacles, margin=OBSTACLE_MARGIN,
-                forbidden_zones=None, start=None, end=None):
-    """点 (px,py) 到所有障碍物的距离是否都大于 margin，且不在禁区内。
-       起终点(start/end)豁免禁区检测。"""
+                forbidden_zones=None):
+    """点 (px,py) 到所有障碍物的距离是否都大于 margin，且不在禁区内"""
     for obs in obstacles:
         if math.hypot(px - obs['x'], py - obs['y']) < margin:
             return False
-    # 起/终点不检测禁区
-    if start and abs(px - start[0]) < 0.001 and abs(py - start[1]) < 0.001:
-        return True
-    if end and abs(px - end[0]) < 0.001 and abs(py - end[1]) < 0.001:
-        return True
     zones = forbidden_zones or _get_forbidden_zones()
     if zones and point_in_forbidden(px, py, zones):
         return False
@@ -145,13 +127,9 @@ def _path_min_dist_to_obstacles(waypoints, obstacles):
 #  候选路点生成
 # ============================================================
 
-def _generate_nodes(sx, sy, ex, ey, obstacles, forbidden_zones=None,
-                     obstacle_margin=None, grid_expand=None,
-                     start=None, end=None):
+def _generate_nodes(sx, sy, ex, ey, obstacles, forbidden_zones=None):
     """在起终点及障碍物周围生成候选路点集合。"""
-    om = OBSTACLE_MARGIN if obstacle_margin is None else obstacle_margin
-    ge = GRID_EXPAND if grid_expand is None else grid_expand
-    margin = om + ge
+    margin = OBSTACLE_MARGIN + GRID_EXPAND
 
     xs = {sx, ex}
     ys = {sy, ey}
@@ -172,17 +150,6 @@ def _generate_nodes(sx, sy, ex, ey, obstacles, forbidden_zones=None,
         for i in range(1, n):
             ys.add(sy + (ey - sy) * i / n)
 
-    # 禁区边界也撒候选节点
-    zones = forbidden_zones or _get_forbidden_zones()
-    if zones:
-        for xmin, xmax, ymin, ymax in zones:
-            for dx in (-OBSTACLE_MARGIN, 0, OBSTACLE_MARGIN):
-                xs.add(xmin + dx)
-                xs.add(xmax + dx)
-            for dy in (-OBSTACLE_MARGIN, 0, OBSTACLE_MARGIN):
-                ys.add(ymin + dy)
-                ys.add(ymax + dy)
-
     nodes = []
     for x in xs:
         if x < ROOM_X_MIN + WALL_MARGIN or x > ROOM_X_MAX - WALL_MARGIN:
@@ -190,8 +157,7 @@ def _generate_nodes(sx, sy, ex, ey, obstacles, forbidden_zones=None,
         for y in ys:
             if y < ROOM_Y_MIN + WALL_MARGIN or y > ROOM_Y_MAX - WALL_MARGIN:
                 continue
-            if _point_safe(x, y, obstacles, forbidden_zones=forbidden_zones,
-                           start=start, end=end):
+            if _point_safe(x, y, obstacles, forbidden_zones=forbidden_zones):
                 nodes.append((x, y))
 
     if (sx, sy) not in nodes:
@@ -211,53 +177,22 @@ def _heuristic(ax, ay, bx, by):
     return abs(ax - bx) + abs(ay - by)
 
 
-def _cost(ax, ay, bx, by, obstacles, obstacle_margin=None,
-         cost_risk_weight=None):
+def _cost(ax, ay, bx, by, obstacles):
     """边 (A → B) 的代价 = 距离 + 风险惩罚"""
-    om = OBSTACLE_MARGIN if obstacle_margin is None else obstacle_margin
-    rw = COST_RISK_WEIGHT if cost_risk_weight is None else cost_risk_weight
     seg_len = math.hypot(bx - ax, by - ay)
     risk = 0.0
     for obs in obstacles:
         d = _point_to_segment_dist(obs['x'], obs['y'], ax, ay, bx, by)
-        if d < om * 3:
+        if d < OBSTACLE_MARGIN * 3:
             risk += 1.0 / max(d, 0.01)
-    return COST_DIST_WEIGHT * seg_len + rw * risk
+    return COST_DIST_WEIGHT * seg_len + COST_RISK_WEIGHT * risk
 
 
-def _build_neighbors(nodes, obstacles, om, forbidden_zones, allow_diagonal,
-                     se_start, se_end):
-    """预建邻接表：对每个节点找出所有可通过 _segment_safe 的邻居。"""
-    neighbors = {}
-    node_list = list(nodes)
-    for i, (cx, cy) in enumerate(node_list):
-        nbs = []
-        for j, (nx, ny) in enumerate(node_list):
-            if i == j:
-                continue
-            if not allow_diagonal:
-                if abs(nx - cx) > 0.001 and abs(ny - cy) > 0.001:
-                    continue
-            if _segment_safe(cx, cy, nx, ny, obstacles, margin=om,
-                             forbidden_zones=forbidden_zones,
-                             start=se_start, end=se_end):
-                nbs.append((nx, ny))
-        neighbors[(cx, cy)] = nbs
-    return neighbors
-
-
-def _astar(start, end, nodes, obstacles, forbidden_zones=None,
-           obstacle_margin=None, cost_risk_weight=None,
-           allow_diagonal=False, se_start=None, se_end=None):
-    """A* 搜索。相邻条件：轴对齐(默认) + 不穿过障碍物/禁区。
-       allow_diagonal=True 时允许对角线移动。"""
-    om = OBSTACLE_MARGIN if obstacle_margin is None else obstacle_margin
+def _astar(start, end, nodes, obstacles, forbidden_zones=None):
+    """A* 搜索。相邻条件：轴对齐 + 不穿过障碍物/禁区。"""
+    node_set = set(nodes)
     sx, sy = start
     ex, ey = end
-
-    # 预建邻接表（O(N²) 只算一次，而非每个节点扩展时都遍历全部）
-    neighbors = _build_neighbors(nodes, obstacles, om, forbidden_zones,
-                                 allow_diagonal, se_start, se_end)
 
     open_set = [(0, 0, sx, sy, None)]
     closed = {}
@@ -280,11 +215,17 @@ def _astar(start, end, nodes, obstacles, forbidden_zones=None,
             path.reverse()
             return path, g
 
-        for nx, ny in neighbors.get(key, []):
+        for nx, ny in node_set:
             nkey = (nx, ny)
+            if nkey == key:
+                continue
+            if abs(nx - cx) > 0.001 and abs(ny - cy) > 0.001:
+                continue
+            if not _segment_safe(cx, cy, nx, ny, obstacles,
+                                 forbidden_zones=forbidden_zones):
+                continue
 
-            step_cost = _cost(cx, cy, nx, ny, obstacles, obstacle_margin=om,
-                               cost_risk_weight=cost_risk_weight)
+            step_cost = _cost(cx, cy, nx, ny, obstacles)
             ng = g + step_cost
             nf = ng + _heuristic(nx, ny, ex, ey)
 
@@ -294,6 +235,83 @@ def _astar(start, end, nodes, obstacles, forbidden_zones=None,
             heapq.heappush(open_set, (nf, ng, nx, ny, key))
 
     return None, float('inf')
+
+
+# ============================================================
+#  禁区绕行
+# ============================================================
+
+def _detour_forbidden(waypoints, forbidden_zones):
+    """对穿过禁区的路径段插入绕行点"""
+    if len(waypoints) < 2:
+        return waypoints
+    result = [waypoints[0]]
+    for i in range(len(waypoints) - 1):
+        x1, y1 = result[-1]
+        x2, y2 = waypoints[i + 1]
+        _add_safe_segment(result, x1, y1, x2, y2, forbidden_zones)
+    return result
+
+
+def _add_safe_segment(result, x1, y1, x2, y2, zones):
+    """将一段路径加入 result，如果穿过禁区则自动绕行"""
+    hitting = _find_hit_zone(x1, y1, x2, y2, zones)
+    if hitting is None:
+        result.append((x2, y2))
+        return
+
+    xmin, xmax, ymin, ymax = hitting
+    margin = 0.1  # 绕行时离禁区边界的额外距离
+
+    if abs(y2 - y1) < 0.001:
+        # 水平段 → 从上方或下方绕
+        above = ymax + margin
+        below = ymin - margin
+        if below > ROOM_Y_MIN + WALL_MARGIN:
+            result.append((x1, below))
+            result.append((x2, below))
+        elif above < ROOM_Y_MAX - WALL_MARGIN:
+            result.append((x1, above))
+            result.append((x2, above))
+        else:
+            result.append((x2, y2))  # 无处可绕，保留原路径
+    elif abs(x2 - x1) < 0.001:
+        # 垂直段 → 从左或右绕
+        left = xmin - margin
+        right = xmax + margin
+        if left > ROOM_X_MIN + WALL_MARGIN:
+            result.append((left, y1))
+            result.append((left, y2))
+        elif right < ROOM_X_MAX - WALL_MARGIN:
+            result.append((right, y1))
+            result.append((right, y2))
+        else:
+            result.append((x2, y2))
+    else:
+        result.append((x2, y2))
+
+
+def _find_hit_zone(x1, y1, x2, y2, zones):
+    """找到第一个被线段穿过的禁区，没有则返回 None"""
+    for z in zones:
+        xmin, xmax, ymin, ymax = z
+        if abs(y2 - y1) < 0.001:  # 水平
+            if ymin <= y1 <= ymax and _x_overlaps(x1, x2, xmin, xmax):
+                return z
+        elif abs(x2 - x1) < 0.001:  # 垂直
+            if xmin <= x1 <= xmax and _y_overlaps(y1, y2, ymin, ymax):
+                return z
+    return None
+
+
+def _x_overlaps(x1, x2, xmin, xmax):
+    lo, hi = min(x1, x2), max(x1, x2)
+    return lo < xmax and hi > xmin
+
+
+def _y_overlaps(y1, y2, ymin, ymax):
+    lo, hi = min(y1, y2), max(y1, y2)
+    return lo < ymax and hi > ymin
 
 
 # ============================================================
@@ -448,23 +466,18 @@ def _score_path(waypoints, obstacles):
 def plan_path(start_x, start_y, end_x, end_y,
               car_x, car_y,
               forbidden_zones=None,
-              obstacles=None,
               num_waypoints=0,
               jump_threshold=None,
-              cluster_min_beams=None,
-              obstacle_margin=None,
-              grid_expand=None,
-              cost_risk_weight=None):
-    """规划避障路径（A*）。obstacle_margin/grid_expand/cost_risk_weight 覆盖 config 值。"""
-    om = OBSTACLE_MARGIN if obstacle_margin is None else obstacle_margin
-    if obstacles is None:
-        kwargs = {}
-        if jump_threshold is not None:
-            kwargs['jump_threshold'] = jump_threshold
-        if cluster_min_beams is not None:
-            kwargs['cluster_min_beams'] = cluster_min_beams
-        obstacles, _ = detect_obstacles(car_x, car_y,
-                                         forbidden_zones=forbidden_zones, **kwargs)
+              cluster_min_beams=None):
+    """规划避障路径（A*）。num_waypoints=0 自动密度。"""
+    kwargs = {}
+    if jump_threshold is not None:
+        kwargs['jump_threshold'] = jump_threshold
+    if cluster_min_beams is not None:
+        kwargs['cluster_min_beams'] = cluster_min_beams
+
+    obstacles, _ = detect_obstacles(car_x, car_y,
+                                     forbidden_zones=forbidden_zones, **kwargs)
 
     sx, sy = start_x, start_y
     ex, ey = end_x, end_y
@@ -486,51 +499,15 @@ def plan_path(start_x, start_y, end_x, end_y,
             "score": 0.0,
         }
 
-    se_start = (sx, sy)
-    se_end = (ex, ey)
     nodes = _generate_nodes(sx, sy, ex, ey, obstacles,
-                            forbidden_zones=forbidden_zones,
-                            obstacle_margin=obstacle_margin,
-                            grid_expand=grid_expand,
-                            start=se_start, end=se_end)
-    path_name = "A*避障"
+                            forbidden_zones=forbidden_zones)
     raw_path, total_cost = _astar((sx, sy), (ex, ey), nodes, obstacles,
-                                   forbidden_zones=forbidden_zones,
-                                   obstacle_margin=obstacle_margin,
-                                   cost_risk_weight=cost_risk_weight,
-                                   se_start=se_start, se_end=se_end)
+                                   forbidden_zones=forbidden_zones)
 
     if raw_path is None:
-        # 轴对齐A*无解，尝试对角线A*
-        raw_path, total_cost = _astar((sx, sy), (ex, ey), nodes, obstacles,
-                                       forbidden_zones=forbidden_zones,
-                                       obstacle_margin=obstacle_margin,
-                                       cost_risk_weight=cost_risk_weight,
-                                       allow_diagonal=True,
-                                       se_start=se_start, se_end=se_end)
-        if raw_path is not None:
-            path_name = "A*对角线"
-    if raw_path is None:
-        # 尝试两种直角路径，优先不穿禁区的
-        paths = [
-            [(sx, sy), (ex, sy), (ex, ey)],
-            [(sx, sy), (sx, ey), (ex, ey)],
-        ]
-        zones = forbidden_zones or _get_forbidden_zones()
-        best = None
-        for wp in paths:
-            safe = True
-            if zones:
-                for i in range(len(wp) - 1):
-                    if segment_crosses_forbidden(wp[i][0], wp[i][1], wp[i+1][0], wp[i+1][1], zones):
-                        safe = False
-                        break
-            if safe:
-                best = wp
-                break
-            if best is None:
-                best = wp
-        wp = best
+        wp = [(sx, sy), (ex, sy), (ex, ey)]
+        if forbidden_zones:
+            wp = _detour_forbidden(wp, forbidden_zones)
         margin = _path_min_dist_to_obstacles(wp, obstacles)
         wp = _simplify_waypoints(wp)
         wp = _resample_waypoints(wp, num_waypoints)
@@ -544,15 +521,17 @@ def plan_path(start_x, start_y, end_x, end_y,
         }
 
     wp = _simplify_waypoints(raw_path)
+    if forbidden_zones:
+        wp = _detour_forbidden(wp, forbidden_zones)
     wp = _resample_waypoints(wp, num_waypoints)
 
     margin = _path_min_dist_to_obstacles(wp, obstacles)
     score = _score_path(wp, obstacles)
-    safe_ok = margin >= om
+    safe_ok = margin >= OBSTACLE_MARGIN
     correction_points = plan_correction_points(wp, obstacles)
 
     return {
-        "path_name": path_name,
+        "path_name": "A*避障",
         "obstacle_margin": round(margin, 3),
         "waypoints": wp,
         "correction_points": correction_points,
@@ -561,6 +540,28 @@ def plan_path(start_x, start_y, end_x, end_y,
         "score": round(score, 2),
     }
 
+
+
+# ============================================================
+#  便捷入口
+# ============================================================
+
+def plan_path_to(target_x, target_y,
+                 forbidden_zones=None,
+                 num_waypoints=0,
+                 jump_threshold=None,
+                 cluster_min_beams=None):
+    """从当前小车位置规划到终点的避障路径"""
+    car_x, car_y = get_car_position()
+    return plan_path(
+        start_x=car_x, start_y=car_y,
+        end_x=target_x, end_y=target_y,
+        car_x=car_x, car_y=car_y,
+        forbidden_zones=forbidden_zones,
+        num_waypoints=num_waypoints,
+        jump_threshold=jump_threshold,
+        cluster_min_beams=cluster_min_beams,
+    )
 
 
 if __name__ == "__main__":
@@ -582,11 +583,7 @@ if __name__ == "__main__":
     print(f"小车位置: X={car_x:.3f}  Y={car_y:.3f}")
     print(f"终点: ({ex:.1f}, {ey:.1f})")
 
-    result = plan_path(
-        start_x=car_x, start_y=car_y,
-        end_x=ex, end_y=ey,
-        car_x=car_x, car_y=car_y,
-        num_waypoints=num)
+    result = plan_path_to(ex, ey, num_waypoints=num)
 
     print(f"\n路径: {result['path_name']}")
     print(f"得分: {result.get('score', '-')}")

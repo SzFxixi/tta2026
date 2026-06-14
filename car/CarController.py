@@ -1,9 +1,7 @@
 import requests
 import json
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, Any, List
 class CarController:
     
     def __init__(self, ip: str = "10.203.94.227", port: int = 5000):

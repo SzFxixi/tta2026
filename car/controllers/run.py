@@ -1,6 +1,10 @@
 import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import time
 import math
+import threading
 import rospy
 import requests
 import numpy as np
@@ -32,6 +36,7 @@ _CORRECT_BEAMS = {
     4: ("n//2",   "n*3//4", "xy"),
     5: ("n-2",    "n//4",   "x"),
     6: ("n-2",    "n//4",   "x"),
+    7: ("n-2",    "n//4",   "xy"),
 }
 
 
@@ -120,11 +125,11 @@ class _Client:
     def move_relative(self, dx, dy):
         return self._post("MoveRelative", {"delta_x": dx, "delta_y": dy})
 
-    def move_x(self, target_x, ref_y):
-        return self._post("MoveOnlyX", {"location_x": target_x, "location_y": ref_y})
+    def move_x(self, target_x, ref_y, correct=True):
+        return self._post("MoveOnlyX", {"location_x": target_x, "location_y": ref_y, "correct": correct})
 
-    def move_y(self, target_y, ref_x):
-        return self._post("MoveOnlyY", {"location_x": ref_x, "location_y": target_y})
+    def move_y(self, target_y, ref_x, correct=True):
+        return self._post("MoveOnlyY", {"location_x": ref_x, "location_y": target_y, "correct": correct})
 
     def circle(self, rad_z):
         return self._post("Circle", {"rad_z": rad_z})
@@ -134,19 +139,33 @@ class _Client:
 #  移动与校正
 # ============================================================
 
-def _move_segment(x1, y1, x2, y2, cli):
-    """轴对齐移动一段"""
-    dx, dy = abs(x2 - x1), abs(y2 - y1)
-    if dx > 0.001 and dy < 0.001:
-        return cli.move_x(x2, y1)
-    elif dy > 0.001 and dx < 0.001:
-        return cli.move_y(y2, x1)
+def _move_segment(x1, y1, x2, y2, cli, correct=True):
+    """轴对齐移动一段。correct=False 纯开环(不读LiDAR)，correct=True 用LiDAR+闭环"""
+    dx, dy = x2 - x1, y2 - y1
+    if not correct:
+        # 非校正点：纯开环，拆成单轴移动，不碰 LiDAR
+        # 注意：底盘坐标系与 LiDAR 坐标系方向相反，delta 需要取反
+        if abs(dx) > 0.001:
+            ok, resp = cli.move_relative(-dx, 0)
+            if not ok:
+                return False, resp
+        if abs(dy) > 0.001:
+            ok, resp = cli.move_relative(0, -dy)
+            if not ok:
+                return False, resp
+        return True, None
+    # 校正点：读 LiDAR 算初始距离 + 服务端闭环(有 sanity check)
+    if abs(dx) > 0.001 and abs(dy) < 0.001:
+        return cli.move_x(x2, y1, correct=True)
+    elif abs(dy) > 0.001 and abs(dx) < 0.001:
+        return cli.move_y(y2, x1, correct=True)
     return True, None
 
 
 # 初始基准（main 中设定）
 _baseline_x_sum = None
 _baseline_y_sum = None
+_start_correct_beams = None  # (rear_beam, right_beam) 起点校正光束原始距离
 
 
 def _lidar_readings_sane():
@@ -234,6 +253,7 @@ def _do_target_correction(cli, pid, target_info):
         4: ("front", "left"),
         5: ("rear",  "right"),
         6: ("rear",  "right"),
+        7: ("rear",  "right"),
     }
     x_type, y_type = beam_cfg[pid]
 
@@ -310,13 +330,225 @@ def _print_waypoint_table(waypoints, correction_points):
 #  主流程
 # ============================================================
 
-def main():
+# 外部控制信号（--external 模式）
+_next_point = None
+_arm_signal = None  # 外部模式时设为 threading.Event()
+
+_last_good_position = None  # 上一次成功到达的目标坐标，LiDAR异常时兜底
+
+
+def _execute_point(num, targets, zones, start_pos, cli, obstacles=None):
+    """执行单次导航 + 动作，返回 True 成功 / False 失败"""
     from entities.path_planner import plan_path
-    from entities.target_points import load_targets
-    from entities.forbidden_zones import load_forbidden_zones
     from entities.action_for_each_target import get_actions
 
-    # ── 初始化 ──
+    start_x, start_y = start_pos
+
+    if num == 7:
+        tx, ty = start_x, start_y
+        if _start_correct_beams is not None:
+            target_info = {"plan": (start_x, start_y), "correct": _start_correct_beams}
+            actions = [{"type": "correct"}]
+        else:
+            target_info = None
+            actions = []
+        label = "起点"
+    elif 1 <= num <= 6:
+        t = targets[num - 1]
+        tx, ty = t["plan"]
+        target_info = t
+        actions = get_actions(num)
+        label = f"目标点 {num}"
+    else:
+        return False
+
+    global _last_good_position
+
+    cx, cy = car_position()
+    if cx is None or cy is None:
+        cx, cy = None, None
+
+    if not _lidar_readings_sane() or cx is None:
+        if _last_good_position is not None:
+            cx, cy = _last_good_position
+            print(f"\n  ⚠ LiDAR不可靠，沿用上次坐标: ({cx:.3f}, {cy:.3f})")
+        else:
+            return False
+
+    print(f"\n{'─' * 40}")
+    print(f"  {label}: ({tx:.2f}, {ty:.2f})  当前: ({cx:.3f}, {cy:.3f})")
+
+    if not (abs(cx - tx) < 0.05 and abs(cy - ty) < 0.05):
+        print(f"\n  [规划] {label} 路径规划中...")
+
+        # 起终点连线与X/Y轴夹角 < 15° → 偏好远离障碍物的路径(而非最短)
+        near_axis_deg = 15
+        a = math.degrees(math.atan2(abs(ty - cy), abs(tx - cx)))
+        near_axis = a < near_axis_deg or a > 90 - near_axis_deg
+        risk_weight = 1.0 if near_axis else 0.0
+        if near_axis:
+            print(f"  [规划] 起终点近轴(a={a:.1f}°)，启用远离障碍物偏好")
+
+        # 层层降级：A*无解时逐步减小膨胀半径
+        base_om = cfg.path_planning.obstacle_margin
+        base_ge = cfg.path_planning.grid_expand
+        levels = [
+            (base_om,       base_ge,       "默认"),
+            (base_om * 0.6, base_ge * 0.5, "降级1"),
+            (base_om * 0.3, base_ge * 0.2, "降级2"),
+            (base_om * 0.1, 0.0,           "降级3(最小)"),
+        ]
+        result = None
+        final_level = "默认"
+        for om, ge, level_name in levels:
+            if result is not None:
+                break
+            result = plan_path(cx, cy, tx, ty, cx, cy, forbidden_zones=zones,
+                               obstacles=obstacles,
+                               obstacle_margin=om, grid_expand=ge,
+                               cost_risk_weight=risk_weight)
+            if result["path_name"] == "先X后Y(安全无解)" or not result["safe"]:
+                print(f"  [规划] {level_name}: margin={om:.2f} expand={ge:.2f} → 无解，尝试降级...")
+                if level_name == levels[-1][2]:
+                    print(f"  [规划] 降至最小半径仍无解，使用安全路径")
+                    final_level = level_name
+                else:
+                    result = None
+            else:
+                final_level = level_name
+        wp = result["waypoints"]
+        cp = result.get("correction_points", [])
+        cp_indices = {p["index"]: p for p in cp}
+        print(f"  [规划] 路径={result['path_name']}({final_level})  段数={len(wp)-1}  校正点={len(cp)}")
+
+        _print_waypoint_table(wp, cp)
+
+        from utils.visualize_path import visualize_plan
+        visualize_plan(wp, correction_points=cp, obstacles=result.get("obstacles"),
+                       zones=zones, title=f"路径规划: {label}", save_path="/tmp/path_plan.png")
+
+        for i in range(len(wp) - 1):
+            x1, y1 = wp[i]
+            x2, y2 = wp[i + 1]
+            dx, dy = x2 - x1, y2 - y1
+            axis = "X" if abs(dx) > 0.001 else "Y"
+
+            is_correction_point = i in cp_indices and cp_indices[i]["safe"]
+
+            if is_correction_point:
+                lidar_ok = _lidar_readings_sane()
+                if lidar_ok:
+                    print(f"  [校正] 路点#{i} ({x1:.3f},{y1:.3f}) SyncYaw →", end=" ")
+                    cli.sync_yaw()
+                    _do_correction(cli, x1, y1)
+                    # sync_yaw 可能旋转了车身，重新检查 LiDAR 读数
+                    lidar_ok = _lidar_readings_sane()
+                else:
+                    print(f"  [校正] 路点#{i} ({x1:.3f},{y1:.3f}) LiDAR异常，跳过校正")
+            else:
+                lidar_ok = False
+
+            # 校正点 + LiDAR 读数合理 → 服务端闭环；否则纯开环
+            use_correct = lidar_ok
+            print(f"  [移动] #{i}→#{i+1} {axis}: {x1:.3f}→{x2:.3f}" if axis=="X" else f"  [移动] #{i}→#{i+1} {axis}: {y1:.3f}→{y2:.3f}", end=" ")
+            ok, resp = _move_segment(x1, y1, x2, y2, cli, correct=use_correct)
+            if not ok:
+                print(f"✗ {resp.get('errorMessage', resp.get('error', '?'))}")
+                return False
+            angle = _read_angle_deviation()
+            angle_str = f"  偏角={angle:.1f}°" if angle is not None else ""
+            print(f"✓{angle_str}")
+            time.sleep(STEP_DELAY)
+
+    # 执行动作
+    for act in actions:
+        t = act["type"]
+        if t == "correct":
+            if num == 7 and not _lidar_readings_sane():
+                print("  ⚠ 前后和或左右和异常，跳过起点精校")
+                continue
+            if target_info and "correct" in target_info:
+                _do_target_correction(cli, num, target_info)
+            else:
+                _do_correction(cli, tx, ty)
+        elif t == "move_rel":
+            cli.move_relative(act.get("dx", 0), act.get("dy", 0))
+        elif t == "rotate":
+            cli.circle(act.get("value", 0))
+        elif t == "stay":
+            if _arm_signal is not None:
+                _arm_signal.clear()
+                _arm_signal.wait()
+            else:
+                input("  >>> 按 Enter 继续...")
+
+    print(f"  ✓ {label} 完成")
+    _last_good_position = (tx, ty)
+    return True
+
+
+def _run_interactive(start_x, start_y, targets, zones, cli, obstacles):
+    """交互模式：键盘输入"""
+    while True:
+        choice = input("\n>>> ").strip()
+        if choice.upper() == 'Q':
+            print("退出。")
+            break
+        try:
+            num = int(choice)
+        except ValueError:
+            print("无效输入")
+            continue
+        _execute_point(num, targets, zones, (start_x, start_y), cli, obstacles)
+
+
+def _run_external(start_x, start_y, targets, zones, cli, obstacles):
+    """外部模式：HTTP API"""
+    import threading as _th
+    from flask import Flask as _Flask, request as _req, jsonify as _j
+    global _arm_signal, _next_point
+
+    _arm_signal = _th.Event()
+    _next_point = None
+    _point_event = _th.Event()
+    ext_app = _Flask(__name__)
+
+    @ext_app.route('/go', methods=['POST'])
+    def _go():
+        global _next_point
+        data = _req.json or {}
+        pt = data.get("point")
+        if pt not in (1,2,3,4,5,6,7):
+            return _j({"ok": False, "error": f"无效点位 {pt}"}), 400
+        _next_point = pt
+        _point_event.set()
+        return _j({"ok": True, "point": pt})
+
+    @ext_app.route('/continue', methods=['POST'])
+    def _cont():
+        _arm_signal.set()
+        return _j({"ok": True})
+
+    @ext_app.route('/status', methods=['GET'])
+    def _stat():
+        return _j({"busy": _point_event.is_set() and not _arm_signal.is_set()})
+
+    _th.Thread(target=lambda: ext_app.run(host='0.0.0.0', port=6000), daemon=True).start()
+    print("外部模式就绪: /go (飞机)  /continue (机械臂)  /status")
+
+    while True:
+        _point_event.clear()
+        _point_event.wait()
+        num = _next_point
+        _next_point = None
+        _execute_point(num, targets, zones, (start_x, start_y), cli, obstacles)
+
+
+def main():
+    from entities.target_points import load_targets
+    from entities.forbidden_zones import load_forbidden_zones
+    external_mode = "--external" in sys.argv
+
     rospy.init_node("full_pipeline", anonymous=True)
     rospy.wait_for_message("scan", LaserScan, timeout=5.0)
 
@@ -324,18 +556,34 @@ def main():
     cli.reset()
     cli.set_baseline()
 
-    # 记录基准前后和、左右和（用于后续校正时的读数合理性检查）
     global _baseline_x_sum, _baseline_y_sum
     n = _get_n()
-    _baseline_x_sum = _get_beam(n // 2) + _get_beam(n - 2)
-    _baseline_y_sum = _get_beam(n // 4) + _get_beam(n * 3 // 4)
-    print(f"基准: 前后和={_baseline_x_sum:.3f}m  左右和={_baseline_y_sum:.3f}m")
+    fx = _get_beam(n // 2); rx = _get_beam(n - 2)
+    ry = _get_beam(n // 4); ly = _get_beam(n * 3 // 4)
+    if None in (fx, rx, ry, ly):
+        print("⚠ 基准光束无回波，跳过基准设定")
+        _baseline_x_sum = _baseline_y_sum = 0.0
+    else:
+        _baseline_x_sum = fx + rx
+        _baseline_y_sum = ry + ly
+        print(f"基准: 前后和={_baseline_x_sum:.3f}m  左右和={_baseline_y_sum:.3f}m")
 
-    # 记录起点
     start_x, start_y = car_position()
+    global _last_good_position
+    _last_good_position = (start_x, start_y)
     print(f"\n起点已记录: ({start_x:.3f}, {start_y:.3f})")
 
-    # 加载配置
+    global _start_correct_beams
+    n = _get_n()
+    sr = _get_beam(n - 2)   # rear beam → X
+    sry = _get_beam(n // 4)  # right beam → Y
+    if sr is not None and sry is not None:
+        _start_correct_beams = (sr, sry)
+        print(f"起点校正光束: rear={sr:.3f}  right={sry:.3f}")
+    else:
+        _start_correct_beams = None
+        print("⚠ 起点校正光束无回波")
+
     targets = load_targets()
     if not targets:
         print("未找到 target_points.json，请先运行 target_points.py 设置点位")
@@ -344,116 +592,22 @@ def main():
     if zones:
         print(f"已加载 {len(zones)} 个禁区")
 
-    print("\n" + "=" * 50)
-    print("  输入 1~6 前往目标点，7 返回起点，Q 退出")
-    print("=" * 50)
+    # 一次性检测障碍物，后续规划复用
+    from entities.obstacle_detector import detect_obstacles
 
-    while True:
-        choice = input("\n>>> ").strip()
-        if choice.upper() == 'Q':
-            print("退出。")
-            break
+    car_x, car_y = car_position()
+    obstacles, _ = detect_obstacles(car_x, car_y, forbidden_zones=zones)
 
-        try:
-            num = int(choice)
-        except ValueError:
-            print("无效输入")
-            continue
+    print(f"检测到 {len(obstacles)} 个障碍物")
+    _print_obstacle_table(obstacles)
 
-        # 确定目标坐标
-        if num == 7:
-            tx, ty = start_x, start_y
-            target_info = None
-            actions = []
-            label = "起点"
-        elif 1 <= num <= 6:
-            t = targets[num - 1]
-            tx, ty = t["plan"]
-            target_info = t
-            actions = get_actions(num)
-            label = f"目标点 {num}"
-        else:
-            print("无效输入 (1~7)")
-            continue
-
-        # 当前位置
-        cx, cy = car_position()
-        if cx is None or cy is None:
-            print("  ⚠ LiDAR 无回波，跳过")
-            continue
-        print(f"\n{'─' * 40}")
-        print(f"  {label}: ({tx:.2f}, {ty:.2f})  当前: ({cx:.3f}, {cy:.3f})")
-
-        if abs(cx - tx) < 0.05 and abs(cy - ty) < 0.05:
-            print("  已在目标点，跳过移动")
-        else:
-            # 规划
-            print(f"\n  [规划] {label} 路径规划中...")
-            result = plan_path(cx, cy, tx, ty, cx, cy, forbidden_zones=zones)
-            wp = result["waypoints"]
-            cp = result.get("correction_points", [])
-            cp_indices = {p["index"]: p for p in cp}
-            print(f"  [规划] 路径={result['path_name']}  段数={len(wp)-1}  校正点={len(cp)}  障碍物={len(result.get('obstacles',[]))}")
-
-            _print_obstacle_table(result.get("obstacles", []))
-            _print_waypoint_table(wp, cp)
-
-            # 执行移动
-            print(f"\n  [移动] 开始执行，共 {len(wp)-1} 段")
-            move_ok = True
-            for i in range(len(wp) - 1):
-                x1, y1 = wp[i]
-                x2, y2 = wp[i + 1]
-                dx, dy = x2 - x1, y2 - y1
-                axis = "X" if abs(dx) > 0.001 else "Y"
-
-                # 中间校正点：角度 + 坐标
-                if i in cp_indices and cp_indices[i]["safe"]:
-                    cptype = cp_indices[i]["type"]
-                    print(f"\n  [校正-路径] 路点#{i} ({x1:.3f},{y1:.3f}) type={cptype}")
-                    print(f"  [校正-路径] → SyncYaw 角度校正...")
-                    cli.sync_yaw()
-                    _do_correction(cli, x1, y1)
-
-                print(f"  [移动] 段#{i}→#{i+1}  MoveOnly{axis}: ({x1:.3f},{y1:.3f}) → ({x2:.3f},{y2:.3f})  d{axis}={abs(dx) if axis=='X' else abs(dy):.3f}m")
-                ok, resp = _move_segment(x1, y1, x2, y2, cli)
-                if not ok:
-                    print(f"  [移动] ✗ 失败: {resp.get('errorMessage', resp.get('error', '?'))}")
-                    move_ok = False
-                    break
-                print(f"  [移动] ✓ 完成")
-                time.sleep(STEP_DELAY)
-
-            if not move_ok:
-                print("  [移动] 未完成，跳过目标点动作")
-                continue
-
-        # ── 到达后按顺序执行动作 ──
-        print(f"\n  [动作] 到达 {label}，共 {len(actions)} 个动作")
-
-        for step, act in enumerate(actions):
-            t = act["type"]
-            print(f"  [动作] #{step+1}/{len(actions)} type={t}")
-            if t == "correct":
-                if target_info and "correct" in target_info:
-                    print(f"  [校正-目标] 使用校正光束坐标")
-                    _do_target_correction(cli, num, target_info)
-                else:
-                    print(f"  [校正-目标] 使用规划坐标")
-                    _do_correction(cli, tx, ty)
-            elif t == "rotate":
-                deg = act.get("value", 0)
-                ok, resp = cli.circle(deg)
-                if not ok:
-                    print(f"  [动作] ✗ 旋转失败: {resp}")
-                else:
-                    print(f"  [动作] ✓ 旋转完成")
-            elif t == "stay":
-                input("  [动作] >>> 按 Enter 继续...")
-            else:
-                print(f"  [动作] 未知类型: {t}")
-
-        print(f"\n  ✓ {label} 完成")
+    if external_mode:
+        _run_external(start_x, start_y, targets, zones, cli, obstacles)
+    else:
+        print("\n" + "=" * 50)
+        print("  输入 1~6 前往目标点，7 返回起点，Q 退出")
+        print("=" * 50)
+        _run_interactive(start_x, start_y, targets, zones, cli, obstacles)
 
     cli.sess.close()
 

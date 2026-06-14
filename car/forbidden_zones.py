@@ -1,7 +1,23 @@
+#!/usr/bin/env python3
+"""
+禁区管理模块 — 支持交互式设置、保存/加载、追加、删除。全部使用绝对坐标。
+
+配置文件 forbidden_zones.json 格式:
+    {
+        "zones": [
+            [xmin, xmax, ymin, ymax],
+            ...
+        ]
+    }
+
+用法:
+    from forbidden_zones import (setup_forbidden_zones, load_forbidden_zones,
+                                  add_forbidden_zone, delete_forbidden_zone,
+                                  point_in_forbidden, segment_crosses_forbidden)
+"""
+
 import json
 import os
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import math
 
 # 配置文件路径（与本模块同目录）
@@ -57,7 +73,7 @@ def setup_forbidden_zones():
     交互式设置禁区（覆盖已有配置）。移动小车到角点按 Enter，对角点按 Enter。
     按 Q 退出。使用小车当前 LiDAR 绝对坐标。
     """
-    from entities.path_planner import get_car_position
+    from path_planner import get_car_position
 
     zones = []
     print(f"\n禁区设置（绝对坐标）")
@@ -91,7 +107,7 @@ def setup_forbidden_zones():
 
 def add_forbidden_zone():
     """向已有配置追加一个禁区。需要 LiDAR 已就绪且小车在原地。"""
-    from entities.path_planner import get_car_position
+    from path_planner import get_car_position
 
     config = _read_config()
     if config is None:
@@ -170,23 +186,15 @@ def segment_crosses_forbidden(ax, ay, bx, by, forbidden_zones):
     """线段 AB 是否穿过某个禁区（分段采样检测，均为绝对坐标）。"""
     if not forbidden_zones:
         return False
-    # 线段包围盒
-    seg_xmin, seg_xmax = min(ax, bx), max(ax, bx)
-    seg_ymin, seg_ymax = min(ay, by), max(ay, by)
     seg_len = math.hypot(bx - ax, by - ay)
     if seg_len < 0.001:
         return point_in_forbidden(ax, ay, forbidden_zones)
     n_samples = max(2, int(seg_len / 0.05))
-    for xmin, xmax, ymin, ymax in forbidden_zones:
-        # 包围盒不重叠 → 快速跳过
-        if seg_xmax < xmin or seg_xmin > xmax or seg_ymax < ymin or seg_ymin > ymax:
-            continue
-        for i in range(n_samples + 1):
-            t = i / n_samples
-            px = ax + (bx - ax) * t
-            py = ay + (by - ay) * t
-            if xmin <= px <= xmax and ymin <= py <= ymax:
-                return True
+    for i in range(n_samples + 1):
+        t = i / n_samples
+        if point_in_forbidden(ax + (bx - ax) * t, ay + (by - ay) * t,
+                              forbidden_zones):
+            return True
     return False
 
 
@@ -198,7 +206,7 @@ if __name__ == "__main__":
     import sys
     import rospy
     from sensor_msgs.msg import LaserScan
-    from entities.path_planner import get_car_position
+    from path_planner import get_car_position
 
     rospy.init_node("forbidden_zones_tool", anonymous=True)
     rospy.wait_for_message("scan", LaserScan, timeout=5.0)

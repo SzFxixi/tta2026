@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # coding=utf-8
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import Flask, request, jsonify
 import socket
+import sys
 import time
 import rospy
 import numpy as np
@@ -14,17 +13,12 @@ import signal
 import os
 import math
 
-from utils.config_loader import cfg
-
 def getx():
     data = rospy.wait_for_message("scan", LaserScan)
     number = len(data.ranges)
     middle = number // 2
     lidarx = data.ranges[middle]
-    t0 = time.time()
     while lidarx == np.inf:
-        if time.time() - t0 > 3.0:
-            return None
         data = rospy.wait_for_message("scan", LaserScan)
         number = len(data.ranges)
         middle = number // 2
@@ -36,10 +30,7 @@ def gety():
     number = len(data.ranges)
     qur = number // 4
     lidary = data.ranges[qur]
-    t0 = time.time()
     while lidary == np.inf:
-        if time.time() - t0 > 3.0:
-            return None
         data = rospy.wait_for_message("scan", LaserScan)
         number = len(data.ranges)
         qur = number // 4
@@ -49,18 +40,13 @@ def gety():
 def getsum():
     lidar_x_average = 0
     lidar_x__average = 0
-    t0 = time.time()
     for i in range(5):
-        if time.time() - t0 > 5.0:
-            break
         data = rospy.wait_for_message("scan", LaserScan)
         number = len(data.ranges)
         middle = number // 2
         lidarx = data.ranges[middle]
         lidarx_ = data.ranges[number-2]
         while lidarx_ == np.inf or lidarx== np.inf:
-            if time.time() - t0 > 5.0:
-                break
             data = rospy.wait_for_message("scan", LaserScan)
             number = len(data.ranges)
             middle = number // 2
@@ -71,33 +57,6 @@ def getsum():
     lidar_x_average /= 5
     lidar_x__average /= 5
     return lidar_x__average + lidar_x_average
-
-def getsum_y():
-    """返回左右方向光束距离之和的5次平均值（用于Y方向合理性检验）"""
-    lidar_y_average = 0
-    lidar_y__average = 0
-    t0 = time.time()
-    for i in range(5):
-        if time.time() - t0 > 5.0:
-            break
-        data = rospy.wait_for_message("scan", LaserScan)
-        number = len(data.ranges)
-        qur = number // 4
-        lidary = data.ranges[qur]
-        lidary_ = data.ranges[number * 3 // 4]
-        while lidary_ == np.inf or lidary == np.inf:
-            if time.time() - t0 > 5.0:
-                break
-            data = rospy.wait_for_message("scan", LaserScan)
-            number = len(data.ranges)
-            qur = number // 4
-            lidary = data.ranges[qur]
-            lidary_ = data.ranges[number * 3 // 4]
-        lidar_y_average += lidary
-        lidar_y__average += lidary_
-    lidar_y_average /= 5
-    lidar_y__average /= 5
-    return lidar_y__average + lidar_y_average
 
 def signal_handler(sig, frame):
     print('收到终止信号，正在关闭资源...')
@@ -132,7 +91,6 @@ class CarService:
         rospy.init_node("lidar_data")
         rospy.wait_for_message("scan", LaserScan)
         self.distance = getsum()
-        self.distance_y = getsum_y()
         self.initialYaw = self.getYaw()
         print("CarService ready")
 
@@ -173,7 +131,6 @@ class CarService:
     def set_baseline(self):
         """保存当前前后距离和以及偏航角，作为后续纠偏的基准"""
         self.distance = getsum()
-        self.distance_y = getsum_y()
         self.initialYaw = self.getYaw()
 
     def SyncYaw(self):
@@ -185,7 +142,7 @@ class CarService:
                 theat = self.return_theat()
                 if yaw > 90:
                     yaw = yaw - 180
-                if theat > cfg.server.sync_yaw_threshold_deg:
+                if theat > 20:
                     if yaw - self.initialYaw > 0:
                         theat = theat * (-1)
                     step = max(2.5, min(abs(theat), 10.0)) * (theat / abs(theat))
@@ -206,15 +163,6 @@ class CarService:
         if t > 1:
             t = 1
         return np.arccos(t) * 180 / 3.1415926
-
-    def readings_sane(self):
-        """检查 LiDAR 读数是否合理：前后和≈基准，左右和≈基准"""
-        current_x_sum = getsum()
-        current_y_sum = getsum_y()
-        tol = cfg.client.sanity_check_tolerance
-        x_ok = abs(current_x_sum - self.distance) < tol
-        y_ok = abs(current_y_sum - self.distance_y) < tol
-        return x_ok and y_ok
 
 
 if __name__ == "__main__":
@@ -374,30 +322,15 @@ if __name__ == "__main__":
                 return jsonify(error_response), 400
 
             target_pub.publish(Pose2D(x=float(location[0]), y=float(location[1]), theta=0))
-
-            gx = getx()
-            if gx is None:
-                print("[MoveOnlyY] LiDAR X 无回波，仅发开环指令")
-                cmd = f"chassis move x 0 y 0 z 0;"
+            move_x = (getx() - car.x_offset) - float(location[0])
+            cmd = f"chassis move x {move_x} y 0 z 0;"
+            car.Move(cmd)
+            attempts = 0
+            while(abs(float(location[1]) - (gety() - car.y_offset)) > 0.08 and attempts < 5):
+                move_y = ((gety() - car.y_offset) - float(location[1]))
+                cmd = f"chassis move x 0 y {move_y} z 0;"
                 car.Move(cmd)
-            else:
-                move_x = (gx - car.x_offset) - float(location[0])
-                cmd = f"chassis move x {move_x} y 0 z 0;"
-                car.Move(cmd)
-
-            do_correct = data.get('correct', True)
-            if do_correct and car.readings_sane():
-                attempts = 0
-                while(abs(float(location[1]) - (gety() - car.y_offset)) > 0.08 and attempts < 5):
-                    gy = gety()
-                    if gy is None:
-                        break
-                    move_y = (gy - car.y_offset) - float(location[1])
-                    cmd = f"chassis move x 0 y {move_y} z 0;"
-                    car.Move(cmd)
-                    attempts += 1
-            elif do_correct and not car.readings_sane():
-                print("[MoveOnlyY] LiDAR 读数异常，跳过闭环校正")
+                attempts += 1
             CurrentTaskID += 1
             success_response = {
                 "isSuccess": True,
@@ -431,30 +364,15 @@ if __name__ == "__main__":
                 return jsonify(error_response), 400
 
             target_pub.publish(Pose2D(x=float(location[0]), y=float(location[1]), theta=0))
-
-            gx = getx()
-            if gx is None:
-                print("[MoveOnlyX] LiDAR X 无回波，仅发开环指令")
-                cmd = f"chassis move x 0 y 0 z 0;"
-                car.Move(cmd)
-            else:
-                move_x = (gx - car.x_offset) - float(location[0])
+            move_x = ((getx() - car.x_offset) - float(location[0]))
+            cmd = f"chassis move x {move_x} y 0 z 0;"
+            car.Move(cmd)
+            attempts = 0
+            while(abs(float(location[0]) - (getx() - car.x_offset)) > 0.08 and attempts < 5):
+                move_x = (getx() - car.x_offset) - float(location[0])
                 cmd = f"chassis move x {move_x} y 0 z 0;"
                 car.Move(cmd)
-
-            do_correct = data.get('correct', True)
-            if do_correct and car.readings_sane():
-                attempts = 0
-                while(abs(float(location[0]) - (getx() - car.x_offset)) > 0.08 and attempts < 5):
-                    gx2 = getx()
-                    if gx2 is None:
-                        break
-                    move_x = (gx2 - car.x_offset) - float(location[0])
-                    cmd = f"chassis move x {move_x} y 0 z 0;"
-                    car.Move(cmd)
-                    attempts += 1
-            elif do_correct and not car.readings_sane():
-                print("[MoveOnlyX] LiDAR 读数异常，跳过闭环校正")
+                attempts += 1
             CurrentTaskID += 1
             success_response = {
                 "isSuccess": True,
