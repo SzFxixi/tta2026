@@ -8,4 +8,5 @@ class Waypoint:
     y: float
     z: float
     rotation: float = 0.0
-    gimbal_pitch: float = -90.0  # 云台俯仰角（度）
+    gimbal_pitch: float = -90.0
+    rotate_to: float = 0.0  # 到达后顺时针旋转角度（度）
