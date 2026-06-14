@@ -15,89 +15,54 @@ import os
 import math
 
 from utils.config_loader import cfg
+from utils.wall_positioning import fit_walls
+
+# 房间尺寸
+_ROOM_W = cfg.room.x_max - cfg.room.x_min
+_ROOM_H = cfg.room.y_max - cfg.room.y_min
+
+_walls_cache = None
+_walls_cache_time = 0
+_CACHE_TTL = 0.05  # 50ms 内复用
+
+def _read_walls(walls=None):
+    """读一次 LiDAR，拟合墙壁，50ms 内重复调用走缓存。"""
+    global _walls_cache, _walls_cache_time
+    now = time.time()
+    if _walls_cache is not None and (now - _walls_cache_time) < _CACHE_TTL:
+        return _walls_cache
+    data = rospy.wait_for_message("scan", LaserScan)
+    _walls_cache = fit_walls(data, walls=walls)
+    _walls_cache_time = now
+    return _walls_cache
 
 def getx():
-    data = rospy.wait_for_message("scan", LaserScan)
-    number = len(data.ranges)
-    middle = number // 2
-    lidarx = data.ranges[middle]
-    t0 = time.time()
-    while lidarx == np.inf:
-        if time.time() - t0 > 3.0:
-            return None
-        data = rospy.wait_for_message("scan", LaserScan)
-        number = len(data.ranges)
-        middle = number // 2
-        lidarx = data.ranges[middle]
-    return lidarx
+    """前墙垂直距离 (m)。"""
+    return _read_walls(walls=["前"]).get("前墙")
 
 def gety():
-    data = rospy.wait_for_message("scan", LaserScan)
-    number = len(data.ranges)
-    qur = number // 4
-    lidary = data.ranges[qur]
-    t0 = time.time()
-    while lidary == np.inf:
-        if time.time() - t0 > 3.0:
-            return None
-        data = rospy.wait_for_message("scan", LaserScan)
-        number = len(data.ranges)
-        qur = number // 4
-        lidary = data.ranges[qur]
-    return lidary
+    """右墙垂直距离 (m)。"""
+    return _read_walls(walls=["右"]).get("右墙")
+
+def get_x():
+    """后墙垂直距离 (m)。"""
+    return _read_walls(walls=["后"]).get("后墙")
+
+def get_y():
+    """左墙垂直距离 (m)。"""
+    return _read_walls(walls=["左"]).get("左墙")
 
 def getsum():
-    lidar_x_average = 0
-    lidar_x__average = 0
-    t0 = time.time()
-    for i in range(5):
-        if time.time() - t0 > 5.0:
-            break
-        data = rospy.wait_for_message("scan", LaserScan)
-        number = len(data.ranges)
-        middle = number // 2
-        lidarx = data.ranges[middle]
-        lidarx_ = data.ranges[number-2]
-        while lidarx_ == np.inf or lidarx== np.inf:
-            if time.time() - t0 > 5.0:
-                break
-            data = rospy.wait_for_message("scan", LaserScan)
-            number = len(data.ranges)
-            middle = number // 2
-            lidarx = data.ranges[middle]
-            lidarx_ = data.ranges[number-2]
-        lidar_x_average +=  lidarx
-        lidar_x__average += lidarx_
-    lidar_x_average /= 5
-    lidar_x__average /= 5
-    return lidar_x__average + lidar_x_average
+    """前后墙距离之和 (m)。"""
+    w = _read_walls(walls=["前", "后"])
+    f, r = w.get("前墙"), w.get("后墙")
+    return (f + r) if (f is not None and r is not None) else None
 
 def getsum_y():
-    """返回左右方向光束距离之和的5次平均值（用于Y方向合理性检验）"""
-    lidar_y_average = 0
-    lidar_y__average = 0
-    t0 = time.time()
-    for i in range(5):
-        if time.time() - t0 > 5.0:
-            break
-        data = rospy.wait_for_message("scan", LaserScan)
-        number = len(data.ranges)
-        qur = number // 4
-        lidary = data.ranges[qur]
-        lidary_ = data.ranges[number * 3 // 4]
-        while lidary_ == np.inf or lidary == np.inf:
-            if time.time() - t0 > 5.0:
-                break
-            data = rospy.wait_for_message("scan", LaserScan)
-            number = len(data.ranges)
-            qur = number // 4
-            lidary = data.ranges[qur]
-            lidary_ = data.ranges[number * 3 // 4]
-        lidar_y_average += lidary
-        lidar_y__average += lidary_
-    lidar_y_average /= 5
-    lidar_y__average /= 5
-    return lidar_y__average + lidar_y_average
+    """左右墙距离之和 (m)。"""
+    w = _read_walls(walls=["右", "左"])
+    r, l = w.get("右墙"), w.get("左墙")
+    return (r + l) if (r is not None and l is not None) else None
 
 def signal_handler(sig, frame):
     print('收到终止信号，正在关闭资源...')
@@ -131,9 +96,6 @@ class CarService:
         self.channel.settimeout(3)
         rospy.init_node("lidar_data")
         rospy.wait_for_message("scan", LaserScan)
-        self.distance = getsum()
-        self.distance_y = getsum_y()
-        self.initialYaw = self.getYaw()
         print("CarService ready")
 
     def Shutdown(self):
@@ -171,49 +133,41 @@ class CarService:
         return yaw
 
     def set_baseline(self):
-        """保存当前前后距离和以及偏航角，作为后续纠偏的基准"""
-        self.distance = getsum()
-        self.distance_y = getsum_y()
-        self.initialYaw = self.getYaw()
+        """已废弃 — 墙壁建模不需要基准。保留兼容旧 API。"""
+        pass
 
     def SyncYaw(self):
-        for iteration in range(10):
-            self.channel.send("chassis position ?;".encode("utf-8"))
-            result = self.channel.recv(1024).decode('utf-8').split(' ')
+        """基于墙壁法向量的偏航角校正。"""
+        for iteration in range(cfg.server.sync_yaw_max_iterations):
+            w = _read_walls()
+            yaw = w.get("yaw")
+            if yaw is None:
+                break
+            if abs(yaw) < cfg.server.sync_yaw_threshold_deg:
+                break
+            # 旋转方向：yaw 为正表示车头偏左，需要右转（负 z）
+            step = max(cfg.server.sync_yaw_step_min_deg,
+                       min(abs(yaw), cfg.server.sync_yaw_step_max_deg))
+            step = step * (-1 if yaw > 0 else 1)
+            self.channel.send(f"chassis move z {step};".encode('utf-8'))
             try:
-                _,_,yaw = map(float,result[:3])
-                theat = self.return_theat()
-                if yaw > 90:
-                    yaw = yaw - 180
-                if theat > cfg.server.sync_yaw_threshold_deg:
-                    if yaw - self.initialYaw > 0:
-                        theat = theat * (-1)
-                    step = max(2.5, min(abs(theat), 10.0)) * (theat / abs(theat))
-                    self.channel.send(f"chassis move z {step};".encode('utf-8'))
-                    time.sleep(0.5)
-                    try:
-                        self.channel.recv(1024)
-                    except Exception:
-                        pass
-                else:
-                    break
+                self.channel.recv(1024)
             except Exception:
                 pass
+            time.sleep(0.5)
 
     def return_theat(self):
-        s = getsum()
-        t = self.distance / s
-        if t > 1:
-            t = 1
-        return np.arccos(t) * 180 / 3.1415926
+        """返回当前偏航角（度），基于墙壁法向量。"""
+        return _read_walls().get("yaw")
 
     def readings_sane(self):
-        """检查 LiDAR 读数是否合理：前后和≈基准，左右和≈基准"""
-        current_x_sum = getsum()
-        current_y_sum = getsum_y()
+        """检查墙壁拟合是否合理：前+后≈房间宽，右+左≈房间高。"""
+        w = _read_walls()
+        f, r = w.get("前墙"), w.get("后墙")
+        ri, l = w.get("右墙"), w.get("左墙")
         tol = cfg.client.sanity_check_tolerance
-        x_ok = abs(current_x_sum - self.distance) < tol
-        y_ok = abs(current_y_sum - self.distance_y) < tol
+        x_ok = (f is not None and r is not None and abs(f + r - _ROOM_W) < tol)
+        y_ok = (ri is not None and l is not None and abs(ri + l - _ROOM_H) < tol)
         return x_ok and y_ok
 
 

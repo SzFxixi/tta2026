@@ -288,16 +288,20 @@ def detect_obstacles(car_x, car_y,
     return obstacles, diag
 
 
-def get_obstacle_beam_mask(car_x, car_y, jump_threshold=JUMP_THRESHOLD):
+def get_obstacle_beam_mask(car_x, car_y, scan=None, jump_threshold=JUMP_THRESHOLD):
     """
     返回每个光束是否为障碍物的布尔掩码（True = 障碍物光束）。
 
     管线：分析 → 突变检测 → 扩展 → 返回逐束掩码（不做聚类/过滤）。
     用于墙壁建模时排除障碍物光束。
+
+    参数:
+        scan:  可选，传入已有的 LaserScan 消息。不传则自己读 /scan。
     """
-    data = rospy.wait_for_message("scan", LaserScan, timeout=LIDAR_TIMEOUT)
+    if scan is None:
+        scan = rospy.wait_for_message("scan", LaserScan, timeout=LIDAR_TIMEOUT)
     hit_dist, hit_angles, valid_mask, n_beams, valid_count = \
-        _analyze_beams(data, car_x, car_y)
+        _analyze_beams(scan, car_x, car_y)
 
     if valid_count == 0:
         return np.zeros(n_beams, dtype=bool)

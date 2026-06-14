@@ -4,6 +4,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import math
+import time
 import heapq
 import rospy
 import numpy as np
@@ -36,29 +37,62 @@ Y_OFFSET = cfg.room.y_offset
 
 
 # ============================================================
-#  小车定位
+#  小车定位（墙壁直线建模）
 # ============================================================
 
-def getx():
+from utils.wall_positioning import fit_walls
+
+_pos_cache = None
+_pos_cache_time = 0
+_POS_CACHE_TTL = 0.05
+
+def _read_position():
+    """读一次 LiDAR，拟合墙壁，50ms 内重复调用走缓存。返回 (x, y)。"""
+    global _pos_cache, _pos_cache_time
+    now = time.time()
+    if _pos_cache is not None and (now - _pos_cache_time) < _POS_CACHE_TTL:
+        return _pos_cache
     data = rospy.wait_for_message("scan", LaserScan)
-    d = data.ranges[len(data.ranges) // 2]
-    while d == np.inf:
-        data = rospy.wait_for_message("scan", LaserScan)
-        d = data.ranges[len(data.ranges) // 2]
-    return d
+    walls = fit_walls(data)
+    x = walls.get("前墙")
+    y = walls.get("右墙")
+    if x is not None:
+        x -= X_OFFSET
+    if y is not None:
+        y -= Y_OFFSET
+    _pos_cache = (x, y)
+    _pos_cache_time = now
+    return x, y
+
+def getx():
+    """前墙距离 (m)。"""
+    x, _ = _read_position()
+    return x
 
 
 def gety():
+    """右墙距离 (m)。"""
+    _, y = _read_position()
+    return y
+
+
+def get_x():
+    """后墙距离 (m)。"""
     data = rospy.wait_for_message("scan", LaserScan)
-    d = data.ranges[len(data.ranges) // 4]
-    while d == np.inf:
-        data = rospy.wait_for_message("scan", LaserScan)
-        d = data.ranges[len(data.ranges) // 4]
-    return d
+    walls = fit_walls(data)
+    return walls.get("后墙")
+
+
+def get_y():
+    """左墙距离 (m)。"""
+    data = rospy.wait_for_message("scan", LaserScan)
+    walls = fit_walls(data)
+    return walls.get("左墙")
 
 
 def get_car_position():
-    return getx() - X_OFFSET, gety() - Y_OFFSET
+    """返回 (x, y)，兼容旧接口。"""
+    return _read_position()
 
 
 # ============================================================

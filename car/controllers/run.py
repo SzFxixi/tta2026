@@ -41,9 +41,40 @@ _CORRECT_BEAMS = {
 
 
 # ============================================================
-#  LiDAR 定位
+#  LiDAR 定位（墙壁直线建模）
 # ============================================================
 
+from utils.wall_positioning import fit_walls
+
+_walls_cache = None
+_walls_cache_time = 0
+_CACHE_TTL = 0.05
+
+def _read_walls(walls=None):
+    """读一次 LiDAR，拟合墙壁，50ms 内重复调用走缓存。"""
+    global _walls_cache, _walls_cache_time
+    now = time.time()
+    if _walls_cache is not None and (now - _walls_cache_time) < _CACHE_TTL:
+        return _walls_cache
+    data = rospy.wait_for_message("scan", LaserScan)
+    _walls_cache = fit_walls(data, walls=walls)
+    _walls_cache_time = now
+    return _walls_cache
+
+def car_position():
+    """规划坐标 — 前墙距离(X) + 右墙距离(Y)。返回 (x, y) 或 (None, None)"""
+    w = _read_walls()
+    return w.get("前墙"), w.get("右墙")
+
+def get_x():
+    """后墙距离 (m)，墙壁建模。"""
+    return _read_walls().get("后墙")
+
+def get_y():
+    """左墙距离 (m)，墙壁建模。"""
+    return _read_walls().get("左墙")
+
+# 保留旧接口用于目标点校正（校正坐标仍用原始光束值，后续迁移）
 def _get_beam(index, timeout=None):
     if timeout is None:
         timeout = cfg.client.lidar_beam_timeout
@@ -59,21 +90,11 @@ def _get_beam(index, timeout=None):
         d = data.ranges[index % n]
     return d
 
-
 def _get_n():
     return len(rospy.wait_for_message("scan", LaserScan).ranges)
 
-
-def car_position():
-    """规划坐标 — 前X + 右Y。返回 (x, y) 或 (None, None)"""
-    n = _get_n()
-    x = _get_beam(n // 2)
-    y = _get_beam(n // 4)
-    return x, y
-
-
 def _read_correct_beams(pid):
-    """读取点位 pid 对应的校正光束原始距离，返回 (x, y, axes)"""
+    """读取点位 pid 对应的校正光束原始距离（暂保留旧实现）。"""
     if pid not in _CORRECT_BEAMS:
         return None, None, "xy"
     n = _get_n()
@@ -162,45 +183,28 @@ def _move_segment(x1, y1, x2, y2, cli, correct=True):
     return True, None
 
 
-# 初始基准（main 中设定）
-_baseline_x_sum = None
-_baseline_y_sum = None
-_start_correct_beams = None  # (rear_beam, right_beam) 起点校正光束原始距离
+# 房间尺寸常量
+_ROOM_W = cfg.room.x_max - cfg.room.x_min
+_ROOM_H = cfg.room.y_max - cfg.room.y_min
+
+_start_correct_beams = None  # (rear_beam, right_beam) 起点校正光束原始距离（暂保留）
 
 
 def _lidar_readings_sane():
-    """检查 LiDAR 读数是否合理：前后和≈基准，左右和≈基准"""
-    if _baseline_x_sum is None:
-        return True
-    n = _get_n()
-    front = _get_beam(n // 2)
-    rear  = _get_beam(n - 2)
-    right = _get_beam(n // 4)
-    left  = _get_beam(n * 3 // 4)
-    if None in (front, rear, right, left):
-        return False
+    """检查墙壁拟合是否合理：前+后≈房间宽，右+左≈房间高。"""
+    w = _read_walls()
+    f, r = w.get("前墙"), w.get("后墙")
+    ri, l = w.get("右墙"), w.get("左墙")
     tol = cfg.client.sanity_check_tolerance
-    x_ok = abs(front + rear - _baseline_x_sum) < tol
-    y_ok = abs(right + left - _baseline_y_sum) < tol
-    return x_ok and y_ok
+    if f is None or r is None or ri is None or l is None:
+        return False
+    return abs(f + r - _ROOM_W) < tol and abs(ri + l - _ROOM_H) < tol
 
 
 def _read_angle_deviation():
-    """读取当前偏角（度），基于基准前后和"""
-    if _baseline_x_sum is None:
-        return None
-    n = _get_n()
-    front = _get_beam(n // 2)
-    rear = _get_beam(n - 2)
-    if front is None or rear is None:
-        return None
-    current_sum = front + rear
-    if current_sum <= 0:
-        return None
-    t = _baseline_x_sum / current_sum
-    if t > 1.0:
-        t = 1.0
-    return math.degrees(math.acos(t))
+    """读取当前偏角（度），基于前墙法向量。"""
+    w = _read_walls()
+    return w.get("yaw")
 
 
 def _do_correction(cli, expected_x, expected_y):
@@ -554,24 +558,16 @@ def main():
 
     cli = _Client()
     cli.reset()
+    # set_baseline 已废弃（墙壁建模不需要基准），保留调用兼容旧服务端
     cli.set_baseline()
-
-    global _baseline_x_sum, _baseline_y_sum
-    n = _get_n()
-    fx = _get_beam(n // 2); rx = _get_beam(n - 2)
-    ry = _get_beam(n // 4); ly = _get_beam(n * 3 // 4)
-    if None in (fx, rx, ry, ly):
-        print("⚠ 基准光束无回波，跳过基准设定")
-        _baseline_x_sum = _baseline_y_sum = 0.0
-    else:
-        _baseline_x_sum = fx + rx
-        _baseline_y_sum = ry + ly
-        print(f"基准: 前后和={_baseline_x_sum:.3f}m  左右和={_baseline_y_sum:.3f}m")
 
     start_x, start_y = car_position()
     global _last_good_position
     _last_good_position = (start_x, start_y)
-    print(f"\n起点已记录: ({start_x:.3f}, {start_y:.3f})")
+    if start_x is not None:
+        print(f"\n起点已记录: ({start_x:.3f}, {start_y:.3f})")
+    else:
+        print("\n⚠ 起点定位失败")
 
     global _start_correct_beams
     n = _get_n()

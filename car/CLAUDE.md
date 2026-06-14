@@ -18,7 +18,7 @@ pkill -f 'roscore|lslidar_net|CarControlServiceFlask'
 
 Logs go to `~/car2_logs/`.
 
-**Note**: `start.sh` references `~/catkin_ws/src/lsx10/scripts/CarControlServiceFlask.py` (legacy path). The canonical path is `~/smart_car/scripts/car/controllers/CarControlServiceFlask.py`. Update `start.sh` if the old symlink/copy no longer exists.
+**Note**: `start.sh` now points to `~/smart_car/scripts/car/controllers/CarControlServiceFlask.py`.
 
 ## Parameter configuration
 
@@ -72,7 +72,7 @@ car/
 └── path_simulator.py        # 离线路径规划模拟器（matplotlib 交互）
 ```
 
-**⚠️ Root-level duplicates**: Many `.py` and `.json` files also exist at the repo root (`action_for_each_target.py`, `CarController.py`, `forbidden_zones.json`, etc.). These are **legacy copies** from before the directory restructure — the canonical versions are in `controllers/`, `entities/`, `utils/`, and `tests/`. Always edit the subdirectory versions, not the root copies.
+**⚠️ Root-level duplicates removed** (Jun 2026). Canonical versions live in `controllers/`, `entities/`, `utils/`, `tests/`. Root only retains standalone/unclassified files: `actions.py` (old), `LidarTest.py` (prototype), `path_simulator.py`, `test_full_pipeline.py`, `wall_positioning_test.py`.
 
 ### Core modules
 
