@@ -44,7 +44,7 @@ class DroneNavigator:
         self.waypoint_frame = config.get('waypoint_frame', 'world')
         # 搜索参数：在已知大致点位周围做小范围搜索以精确定位目标
         self.search_max_attempts = int(config.get('search_max_attempts', 8))
-        self.search_step = float(config.get('search_step', 0.2))
+        self.search_step = float(config.get('search_step', 0.1))
         self.grade_search_attempts = int(config.get('grade_search_attempts', 5))
         self.grade_search_step = float(config.get('grade_search_step', 0.2))
         self.servo_max_attempts = int(config.get('servo_max_attempts', 3))
@@ -52,7 +52,8 @@ class DroneNavigator:
         self.show_camera = bool(config.get('show_camera', False))
         la = config.get('loading_area', {})
         self.loading_area = Waypoint('装货区', float(la.get('x', 0)), float(la.get('y', 0)),
-                                      float(la.get('z', 1.5)))
+                                      float(la.get('z', 1.5)),
+                                      gimbal_pitch=float(la.get('gimbal_pitch', -90.0)))
         self.landing_offset = float(config.get('landing_offset', 0.1))
 
         self.h_label = config.get('h_label', 'H')
@@ -115,6 +116,9 @@ class DroneNavigator:
         self.camera.release()
         return success
 
+    def move_to(self, x: float, y: float, z: float) -> bool:
+        return self.drone.move_to(x, y, z)
+
     def capture_frame(self) -> Optional[Any]:
         for _ in range(5):
             success, frame = self.camera.read()
@@ -168,10 +172,10 @@ class DroneNavigator:
             'grade_objects': grade_detection.get('objects', []),
         }
 
-    def _servo_toward_h(self, h_box: List[float], frame_shape: tuple) -> bool:
+    def _servo_toward_h(self, h_box: List[float], frame_shape: tuple, rotation: float = 0.0) -> bool:
         """
-        视觉伺服：根据 H 在画面中的像素偏移，微移无人机使 H 靠近画面中心。
-        返回 True 表示已发起移动，False 表示偏移量太小无需移动。
+        视觉伺服：根据 H 在（已旋转）画面中的像素偏移，微移无人机使 H 靠近画面中心。
+        rotation: 画面被旋转的角度（度），用于修正坐标系方向。
         """
         height, width = frame_shape[:2]
         cx = width / 2.0
@@ -182,29 +186,29 @@ class DroneNavigator:
         h_cy = (y1 + y2) / 2.0
         h_pixel_size = max(x2 - x1, y2 - y1)
 
-        # 像素偏移
-        dx_px = h_cx - cx   # 正值=H在画面右侧
-        dy_px = h_cy - cy   # 正值=H在画面下方
+        dx_px = h_cx - cx
+        dy_px = h_cy - cy
 
-        # 像素 → 米换算：已知 H 物理尺寸 / H 像素尺寸
         if h_pixel_size < 0.5:
             return False
         meters_per_pixel = self.h_marker_size / h_pixel_size
 
-        # 坐标映射（云台朝下）：
-        #  画面上方(-dy_px) = 近处 = 机身前方(+x)
-        #  画面下方(+dy_px) = 远处 = 机身后方(-x)
-        #  画面右边(+dx_px) = 机身右侧  = 机身 -y
-        drone_dx = -dy_px * meters_per_pixel   # 上下反号 → 前后
-        drone_dy = -dx_px * meters_per_pixel   # 左右反号 → 左右
+        # 基础映射（0° 旋转时）：上→前(+x)，右→正y方向
+        drone_dx = -dy_px * meters_per_pixel
+        drone_dy = +dx_px * meters_per_pixel
+
+        # 画面被旋转过，伺服方向反向旋转补偿
+        if abs(rotation) > 0.1:
+            rot_rad = math.radians(-rotation)
+            drone_dx, drone_dy = MathHelper.rotate_axis(drone_dx, drone_dy, rot_rad)
+
         offset_m = (drone_dx ** 2 + drone_dy ** 2) ** 0.5
 
-        # 偏移小于 5cm 认为已居中
-        if offset_m < 0.05:
+        if offset_m < 0.02:
             print(f"[DroneNavigator] 视觉伺服: H 已居中 (offset={offset_m:.3f}m)")
             return False
 
-        print(f"[DroneNavigator] H 偏移 ({dx_px:.0f}, {dy_px:.0f})px → 移动 前{drone_dx:+.3f}m 右{drone_dy:+.3f}m")
+        print(f"[DroneNavigator] H 偏移 ({dx_px:.0f}, {dy_px:.0f})px rot={rotation}° → 移动 前{drone_dx:+.3f}m 右{drone_dy:+.3f}m")
         return self.drone.move_to(
             self.drone.state['x'] + drone_dx,
             self.drone.state['y'] + drone_dy,
@@ -236,19 +240,31 @@ class DroneNavigator:
         return rotated
 
     def _capture_fresh_frame(self, settle: float = 3.0, read_time: float = 2.0) -> Optional[Any]:
-        """等无人机稳定 settle 秒，然后持续读帧 read_time 秒，返回最后一帧。"""
+        """等无人机稳定 settle 秒，然后持续读帧 read_time 秒，返回最后一帧。
+        如果流中断过（窗口内帧数太少），等待流恢复后重新取帧。"""
         time.sleep(settle)
-        last_frame = None
-        start = time.time()
-        while time.time() - start < read_time:
-            success, frame = self.camera.read()
-            if success and frame is not None:
-                last_frame = frame
-        if last_frame is not None:
-            print(f"[DroneNavigator] 已捕获最新帧 ({last_frame.shape[1]}x{last_frame.shape[0]})")
-        else:
-            print("[DroneNavigator] 警告: 未获取到画面")
-        return last_frame
+
+        for retry in range(3):
+            last_frame = None
+            read_count = 0
+            start = time.time()
+            while time.time() - start < read_time:
+                success, frame = self.camera.read()
+                if success and frame is not None:
+                    last_frame = frame
+                    read_count += 1
+            if last_frame is not None:
+                print(f"[DroneNavigator] 已捕获最新帧 ({last_frame.shape[1]}x{last_frame.shape[0]}), 窗口内 {read_count} 帧")
+                if read_time < 3.0 or read_count >= 5:
+                    return last_frame
+                print(f"[DroneNavigator] 流恢复中: 仅 {read_count} 帧，等 2s 后重试...")
+                time.sleep(2)
+            else:
+                print(f"[DroneNavigator] 未获取到画面，等 2s 后重试...")
+                time.sleep(2)
+
+        print("[DroneNavigator] 警告: 多次重试仍无法获取有效画面")
+        return None
 
     def scan_single_waypoint(self, waypoint: Waypoint) -> Dict[str, Any]:
         """
@@ -256,7 +272,9 @@ class DroneNavigator:
         最多 servo_max_attempts 轮。
         """
         # 飞到航点：增加重试与恢复逻辑，遇到失败时尝试 reset 后重试
+        print(f"[DroneNavigator] 目标: {waypoint.name} ({waypoint.x:.2f}, {waypoint.y:.2f}, {waypoint.z:.2f}), 当前state: ({self.drone.state['x']:.2f}, {self.drone.state['y']:.2f}, {self.drone.state['z']:.2f}), yaw={self.drone.state['yaw']:.1f}°")
         moved = False
+        
         for mv_try in range(3):
             if self.drone.move_to(waypoint.x, waypoint.y, waypoint.z):
                 moved = True
@@ -267,11 +285,8 @@ class DroneNavigator:
         if not moved:
             return {'success': False, 'reason': 'move_failed'}
 
-        #if not self._rotate_gimbal_with_recovery(waypoint.gimbal_pitch):
-        #   return {'success': False, 'reason': 'gimbal_failed'}
-        # 临时禁用云台控制
-        print(f"[DroneNavigator] 到达 {waypoint.name}（云台控制已禁用，gimbal_pitch={waypoint.gimbal_pitch}°）")
-        print(f"[DroneNavigator] 到达 {waypoint.name}，云台={waypoint.gimbal_pitch}°，等稳定后取最新帧...")
+        if not self._rotate_gimbal_with_recovery(waypoint.gimbal_pitch):
+            return {'success': False, 'reason': 'gimbal_failed'}
 
         for attempt in range(self.servo_max_attempts):
             # 非首轮：螺旋展开微移
@@ -280,7 +295,7 @@ class DroneNavigator:
                 self.drone.move_to(waypoint.x + ox, waypoint.y + oy, waypoint.z)
 
             # 等稳定 → 持续读到最新帧
-            frame = self._capture_fresh_frame(settle=4.0 if attempt == 0 else 3.0)
+            frame = self._capture_fresh_frame(settle=4.0 if attempt == 0 else 3.0, read_time=4.0 if attempt == 0 else 3.0)
             if frame is None:
                 continue
 
@@ -298,31 +313,45 @@ class DroneNavigator:
             image_path, annotated = self.annotate_and_save(frame, combined, prefix)
             self._preview(annotated)
 
-            # H 没找到 → 下一轮螺旋展开
+            # H 没找到 → 检查是否有等级可以直接录用
             if h_candidate is None:
+                if all_detections['grade_objects']:
+                    best_grade = max(all_detections['grade_objects'], key=lambda o: o['confidence'])
+                    print(f"[DroneNavigator] {waypoint.name} 第{attempt}轮: 未检测到 H，但发现等级={best_grade['label']}({best_grade['confidence']:.2f})，直接录用")
+                    self._rotate_gimbal_with_recovery(0)
+                    return {
+                        'success': True,
+                        'detection': {'objects': all_detections['h_objects']},
+                        'h_detection': None,
+                        'grade': best_grade,
+                        'image_path': image_path,
+                    }
                 print(f"[DroneNavigator] {waypoint.name} 第{attempt}轮: 未检测到 H")
                 continue
 
             # 找到 H → 伺服居中 → 停稳后再拍一张识别等级
-            self._servo_toward_h(h_candidate['box'], frame.shape)
+            self._servo_toward_h(h_candidate['box'], frame.shape, rotation=waypoint.rotation)
             print(f"[DroneNavigator] {waypoint.name} 已居中 H，等稳定后识别等级...")
 
             final_grade = grade_info
             final_path = image_path
 
-            grade_frame = self._capture_fresh_frame(settle=3.0)
+            grade_frame = self._capture_fresh_frame(settle=3.0, read_time=3.0)
             if grade_frame is not None:
                 if waypoint.rotation:
                     grade_frame = self._rotate_frame(grade_frame, waypoint.rotation)
                 centered_all = self.detect_all(grade_frame)
-                final_grade = centered_all['grade_info']
+                centered_grade = centered_all['grade_info']
+                if centered_grade.get('label', 'unknown') != 'unknown':
+                    final_grade = centered_grade
+                else:
+                    print(f"[DroneNavigator] 居中帧未检测到等级，回退用伺服前: {final_grade.get('label','unknown')}")
                 grade_combined = {'objects': centered_all['grade_objects'] + centered_all['h_objects']}
                 final_path, grade_annotated = self.annotate_and_save(grade_frame, grade_combined, f'{prefix}_centered')
                 self._preview(grade_annotated)
                 print(f"[DroneNavigator] {waypoint.name} 居中后: 等级={final_grade.get('label','unknown')}")
 
-            #if not self._rotate_gimbal_with_recovery(0):
-            #    return {'success': False, 'reason': 'gimbal_failed'}
+            self._rotate_gimbal_with_recovery(0)
             return {
                 'success': True,
                 'detection': {'objects': all_detections['h_objects']},
@@ -479,7 +508,7 @@ class DroneNavigator:
                 print(f"[DroneNavigator] {waypoint.name} 未找到: {result.get('reason', 'not_found')}")
 
             time.sleep(1.0)
-            self._reset_yaw()
+            # self._reset_yaw()  # 暂时禁用：偏航修正不准
 
         la = self.loading_area
         print(f"[DroneNavigator] 扫描完毕，前往装货区 ({la.x}, {la.y}, {la.z})...")
@@ -487,12 +516,10 @@ class DroneNavigator:
 
         # 装货区归航：检测 H，居中后往前微移再降落
         print(f"[DroneNavigator] 装货区归航: 检测 H 并精确对准...")
-        #if not self._rotate_gimbal_with_recovery(-90):
-        #    print("[DroneNavigator] 装货区归航云台旋转失败，继续尝试后续流程")
-        # 临时禁用云台控制
-        print("[DroneNavigator] 装货区归航（云台控制已禁用）")
+        if not self._rotate_gimbal_with_recovery(self.loading_area.gimbal_pitch):
+            print("[DroneNavigator] 装货区归航云台旋转失败，继续尝试后续流程")
         for attempt in range(self.servo_max_attempts):
-            frame = self._capture_fresh_frame(settle=4.0 if attempt == 0 else 3.0)
+            frame = self._capture_fresh_frame(settle=4.0 if attempt == 0 else 3.0, read_time=4.0 if attempt == 0 else 3.0)
             if frame is None:
                 continue
 
@@ -507,7 +534,7 @@ class DroneNavigator:
 
             self._servo_toward_h(h_candidate['box'], frame.shape)
             print(f"[DroneNavigator] 装货区: 已对准 H，前移 {self.landing_offset}m 后降落")
-            self._reset_yaw()
+            # self._reset_yaw()  # 暂时禁用：偏航修正不准
             self.drone.move_to(
                 self.drone.state['x'] + self.landing_offset,
                 self.drone.state['y'],
@@ -515,8 +542,9 @@ class DroneNavigator:
             )
             break
 
-        #if not self._rotate_gimbal_with_recovery(0):
-        #    print("[DroneNavigator] 归航结束云台复位失败")
+        print("[DroneNavigator] 旋转 180° 后降落...")
+        self.drone.rotate_yaw(180)
+        self._rotate_gimbal_with_recovery(0)
         time.sleep(1)
         self._close_preview()
         self.land()

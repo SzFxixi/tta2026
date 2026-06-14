@@ -40,6 +40,7 @@ class DroneControlClient:
 
         # 控制帧: 'world' 表示命令以全局/world 坐标系为准（默认），'body' 表示以机身坐标系为准
         self.control_frame = config.get("control_frame", "world")
+        self.max_translate_ms = int(config.get("max_translate_ms", 8000))
 
     # ------------------------------------------------------------------
     # 底层通信（HTTP PUT → PlaneServer，指数退避重试 + taskId）
@@ -50,7 +51,7 @@ class DroneControlClient:
         request_data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=request_data, method="PUT",
                                      headers={"Content-Type": "application/json"})
-        response = urllib.request.urlopen(req, timeout=10)
+        response = urllib.request.urlopen(req, timeout=15)
         return response.read().decode("utf-8")
 
     def _query_server_task_id(self) -> Optional[int]:
@@ -309,17 +310,31 @@ class DroneControlClient:
 
         speed_x, speed_y, speed_z, _ = MathHelper.standardize(relative_x, relative_y, dz, translate_speed)
         frame_name = 'world' if getattr(self, 'control_frame', 'world') == 'world' else 'body'
-        print(f"[DroneControlClient] 发送 Translate ({frame_name} frame) 速度=({speed_x:.3f},{speed_y:.3f},{speed_z:.3f}) duration_ms={duration_ms}")
-        duration_ms = int(duration_ms)
 
-        ok = self._send_command("Translate", {"x": speed_x, "y": speed_y, "z": speed_z, "time": duration_ms})
-        if ok:
+        total_ms = distance / translate_speed * 1000
+        if total_ms < self.threshold_translate:
+            total_ms = self.threshold_translate
+
+        # 长距离分段发送，避免单次 Translate 超过 HTTP 超时（PlaneServer 阻塞等飞行结束才响应）
+        total_ms_int = int(total_ms)
+        remaining_ms = total_ms_int
+        all_ok = True
+        while remaining_ms > 0:
+            segment_ms = min(remaining_ms, self.max_translate_ms)
+            print(f"[DroneControlClient] 发送 Translate ({frame_name} frame) 速度=({speed_x:.3f},{speed_y:.3f},{speed_z:.3f}) duration_ms={segment_ms}/{total_ms_int}")
+            ok = self._send_command("Translate", {"x": speed_x, "y": speed_y, "z": speed_z, "time": segment_ms})
+            if not ok:
+                all_ok = False
+                break
+            remaining_ms -= segment_ms
+
+        if all_ok:
             self.state["x"] = x
             self.state["y"] = y
             self.state["z"] = z
             print(f"[DroneControlClient] 位置: ({x:.2f}, {y:.2f}, {z:.2f})")
         time.sleep(0.5)
-        return ok
+        return all_ok
 
     # ------------------------------------------------------------------
     # 旋转

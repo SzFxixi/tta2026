@@ -70,7 +70,7 @@ class CameraSource:
         # 不用 fps 滤镜，保持原始分辨率与帧率
         cmd = [
             ffmpeg,
-            '-loglevel', 'error',
+            '-loglevel', 'quiet',
             '-listen', '1',
             '-rtmp_live', 'live',
             '-fflags', '+nobuffer+discardcorrupt+genpts',
@@ -89,7 +89,7 @@ class CameraSource:
         self._process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=None,
+            stderr=subprocess.DEVNULL,
         )
         self._running = True
         self._reader_thread = threading.Thread(target=self._pipe_reader, daemon=True)

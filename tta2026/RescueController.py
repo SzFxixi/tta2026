@@ -59,64 +59,111 @@ class RescueController:
         return all_ok
 
     def execute_delivery_mission(self) -> bool:
-        """执行完整任务：扫描、等待小车信号、前往目标点着陆、再等待返回信号并回到原点。"""
-        print("[RescueController] 开始完整交付任务...")
+        """完整任务流程：
+        无人机巡检 → 装货 → 投送 → 物资放置 → 返航。
+        与小车通过 CarController.wait_for_signal 同步。"""
+        print("[RescueController] ====== 完整任务开始 ======")
 
+        # ==================== 阶段 1：巡检 ====================
+        print("[RescueController] --- 阶段 1: 无人机巡检 ---")
         results = self.drone.scan_waypoints()
         self._update_rescue_results(results)
         self._write_csv()
+        # scan_waypoints 末尾已在装货区旋转 180° 并降落
 
         target_name = self._select_target_waypoint(results)
         if target_name is None:
-            print("[RescueController] 未能确定目标航点，无法继续执行交付任务")
+            print("[RescueController] 未能确定目标航点，任务终止")
             return False
-        print(f"[RescueController] 目标航点已选定: {target_name}")
+        print(f"[RescueController] 目标航点: {target_name}")
 
-        print("[RescueController] 已在降落区等待小车信号，准备前往目标点")
-        if not self.wait_for_car_signal('go_to_target'):
-            print("[RescueController] 等待小车信号前往目标超时或失败")
+        # ==================== 阶段 2：装货 ====================
+        print("[RescueController] --- 阶段 2: 小车取货装货 ---")
+
+        # 2a. 无人机通知小车去取货
+        print("[RescueController] 通知小车: 前往取货区取物资")
+        if not self.wait_for_car_signal('go_fetch'):
             return False
+
+        # 2b. 等待小车取货完成并回到装货区
+        print("[RescueController] 等待小车回到装货区并装载完成...")
+        if not self.wait_for_car_signal('loaded'):
+            return False
+
+        # 2c. 小车装完货后，控制小车返回初始位置
+        print("[RescueController] 通知小车: 返回初始位置")
+        if self.car is not None:
+            self.car.move_to(0.0, 0.0)
+        else:
+            print("[RescueController] 小车未接入，跳过小车移动")
+
+        # ==================== 阶段 3：无人机出征 ====================
+        print("[RescueController] --- 阶段 3: 无人机携带物资出征 ---")
 
         if not self.drone.takeoff():
-            print("[RescueController] 起飞失败，无法前往目标点")
             return False
 
+        # 撤销装货区着陆时的 180° 旋转，恢复起始朝向
+        print("[RescueController] 旋转 180° 恢复起始朝向")
+        self.drone.rotate_yaw(180)
+
+        # 回到原点对齐坐标系
+        return_altitude = float(self.config.get('return_altitude', 1.2))
+        print(f"[RescueController] 返回原点 (0, 0, {return_altitude}) 校准坐标系")
+        if not self.drone.move_to(0.0, 0.0, return_altitude):
+            return False
+
+        # 飞往目标救援点
         target_waypoint = self._find_waypoint(target_name)
         if target_waypoint is None:
-            print(f"[RescueController] 未找到对应的航点数据: {target_name}")
             return False
-
-        print(f"[RescueController] 起飞前往目标航点 {target_waypoint.name} ({target_waypoint.x}, {target_waypoint.y}, {target_waypoint.z})")
+        print(f"[RescueController] 飞往目标: {target_waypoint.name} ({target_waypoint.x}, {target_waypoint.y}, {target_waypoint.z})")
         if not self.drone.move_to(target_waypoint.x, target_waypoint.y, target_waypoint.z):
-            print(f"[RescueController] 飞往目标航点 {target_waypoint.name} 失败")
             return False
 
-        print(f"[RescueController] 已到达目标航点 {target_waypoint.name}，执行降落")
+        # 目标点 H 对齐后降落
+        print("[RescueController] 目标点 H 对齐并降落")
+        self.drone._rotate_gimbal_with_recovery(-90)
+        for attempt in range(3):
+            frame = self.drone._capture_fresh_frame(settle=3.0)
+            if frame is None:
+                continue
+            all_det = self.drone.detect_all(frame)
+            if all_det['h_candidate'] is not None:
+                self.drone._servo_toward_h(all_det['h_candidate']['box'], frame.shape)
+                break
+        self.drone._rotate_gimbal_with_recovery(0)
         if not self.drone.land():
-            print("[RescueController] 目标点降落失败")
             return False
 
-        print("[RescueController] 目标点已着陆，等待小车信号返回原点")
-        if not self.wait_for_car_signal('return_home'):
-            print("[RescueController] 等待小车信号返回原点超时或失败")
+        # ==================== 阶段 4：地面物资放置 ====================
+        print("[RescueController] --- 阶段 4: 小车放置物资 ---")
+
+        # 4a. 通知小车来救援点
+        print("[RescueController] 通知小车: 前往救援点取物资并放置")
+        if not self.wait_for_car_signal('come_to_target'):
             return False
 
-        print("[RescueController] 收到返回信号，准备回到原点")
+        # 4b. 等待小车完成物资放置
+        print("[RescueController] 等待小车放置物资完成...")
+        if not self.wait_for_car_signal('delivery_done'):
+            return False
+
+        # 4c. 小车返回初始位置
+        print("[RescueController] 通知小车: 返回初始位置")
+        if self.car is not None:
+            self.car.move_to(0.0, 0.0)
+
+        # ==================== 阶段 5：返航 ====================
+        print("[RescueController] --- 阶段 5: 无人机返航 ---")
         if not self.drone.takeoff():
-            print("[RescueController] 起飞失败，无法返回原点")
             return False
-
-        return_altitude = float(self.config.get('return_altitude', 1.2))
         if not self.drone.move_to(0.0, 0.0, return_altitude):
-            print("[RescueController] 返回原点飞行失败")
             return False
-
-        print("[RescueController] 已到达原点，准备降落")
         if not self.drone.land():
-            print("[RescueController] 原点降落失败")
             return False
 
-        print("[RescueController] 完整任务执行完成")
+        print("[RescueController] ====== 完整任务完成 ======")
         return True
 
     def _update_rescue_results(self, results: Dict[str, Dict[str, Any]]) -> None:
@@ -141,10 +188,19 @@ class RescueController:
         return next((wp for wp in self.drone.waypoints if wp.name == name), None)
 
     def _select_target_waypoint(self, results: Dict[str, Dict[str, Any]]) -> str | None:
+        # 优先级 1: target_grade — 按等级数字("1"/"2"/"3")匹配
+        target_grade = self.config.get('target_grade')
+        if target_grade is not None:
+            for point_name, result in results.items():
+                if result.get('success') and str(result.get('grade', '')).lower() == str(target_grade).lower():
+                    return point_name
+
+        # 优先级 2: target_waypoint_name — 直接指定航点名称
         target_name = self.config.get('target_waypoint_name')
         if target_name and target_name in results:
             return target_name
 
+        # 优先级 3: target_labels — 按灾害类型名匹配
         target_labels = self.config.get('target_labels', [])
         if isinstance(target_labels, str):
             target_labels = [target_labels]
@@ -155,13 +211,7 @@ class RescueController:
                 if result.get('success') and str(result.get('raw_label', '')).lower() in target_labels:
                     return point_name
 
-        target_grade = self.config.get('target_grade')
-        if target_grade is not None:
-            for point_name, result in results.items():
-                if result.get('success') and str(result.get('grade', '')).lower() == str(target_grade).lower():
-                    return point_name
-
-        # 默认选取第一个成功扫描到的点
+        # 默认：选取第一个成功扫描到的点
         for point_name, result in results.items():
             if result.get('success'):
                 return point_name
