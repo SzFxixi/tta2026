@@ -288,6 +288,29 @@ def detect_obstacles(car_x, car_y,
     return obstacles, diag
 
 
+def get_obstacle_beam_mask(car_x, car_y, jump_threshold=JUMP_THRESHOLD):
+    """
+    返回每个光束是否为障碍物的布尔掩码（True = 障碍物光束）。
+
+    管线：分析 → 突变检测 → 扩展 → 返回逐束掩码（不做聚类/过滤）。
+    用于墙壁建模时排除障碍物光束。
+    """
+    data = rospy.wait_for_message("scan", LaserScan, timeout=LIDAR_TIMEOUT)
+    hit_dist, hit_angles, valid_mask, n_beams, valid_count = \
+        _analyze_beams(data, car_x, car_y)
+
+    if valid_count == 0:
+        return np.zeros(n_beams, dtype=bool)
+
+    jump_indices = _detect_jumps(hit_dist, valid_mask, n_beams, jump_threshold)
+    if len(jump_indices) < 2:
+        return np.zeros(n_beams, dtype=bool)
+
+    obstacle_beam = _expand_obstacle_beams(
+        hit_dist, valid_mask, n_beams, jump_indices, jump_threshold)
+    return np.array(obstacle_beam, dtype=bool)
+
+
 # ── 独立测试入口 ──
 if __name__ == "__main__":
     import sys
