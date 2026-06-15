@@ -127,18 +127,38 @@ class CarService:
                 pass
 
     def SyncYaw(self):
-        """基于墙壁法向量的偏航角校正。"""
+        """基于墙壁法向量的偏航角校正。带 sanity check 防止垃圾读数。"""
+        prev_yaw = None
         for iteration in range(cfg.server.sync_yaw_max_iterations):
             w = _read_walls()
             yaw = w.get("yaw")
+            fx, ry = w.get("前墙"), w.get("右墙")
             if yaw is None:
+                print(f"  [SyncYaw] yaw=None，放弃")
                 break
+            # sanity check: 墙壁拟合必须合理
+            if not self.readings_sane():
+                print(f"  [SyncYaw] readings_sane 不通过，放弃")
+                break
+            # sanity check: 位置超房间边界 → 墙体拟合垃圾
+            if fx is not None and ry is not None:
+                rw = cfg.room.x_max - cfg.room.x_min
+                rh = cfg.room.y_max - cfg.room.y_min
+                if fx < -0.5 or fx > rw + 0.5 or ry < -0.5 or ry > rh + 0.5:
+                    print(f"  [SyncYaw] 位置异常 X={fx:.2f} Y={ry:.2f}，放弃")
+                    break
+            # sanity check: 连续两帧偏角跳变 > 30°
+            if prev_yaw is not None and abs(yaw - prev_yaw) > 30:
+                print(f"  [SyncYaw] yaw 跳变 {prev_yaw:.1f}°→{yaw:.1f}°，放弃")
+                break
+            prev_yaw = yaw
             if abs(yaw) < cfg.server.sync_yaw_threshold_deg:
+                print(f"  [SyncYaw] yaw={yaw:.1f}° < {cfg.server.sync_yaw_threshold_deg}°，完成")
                 break
-            # 旋转方向：yaw 为正表示车头偏左，需要右转（负 z）
             step = max(cfg.server.sync_yaw_step_min_deg,
                        min(abs(yaw), cfg.server.sync_yaw_step_max_deg))
             step = step * (-1 if yaw > 0 else 1)
+            print(f"  [SyncYaw] #{iteration+1} yaw={yaw:.1f}° → 转 {step:+.0f}°  (X={fx:.2f} Y={ry:.2f})")
             self.channel.send(f"chassis move z {step};".encode('utf-8'))
             try:
                 self.channel.recv(1024)

@@ -39,6 +39,7 @@ Changing `config.yaml` does not require code edits. All Python modules import fr
 - **Chassis control**: TCP socket to `192.168.42.2:40923` (configured in `config.yaml` → `chassis.ip`). Init handshake: send `"command;"`, receive acknowledgement. Movement: `chassis move x <dx> y <dy> z <dz>;`. Position query: `chassis position ?;` → `x y yaw`. Speed query: `chassis speed ?;` → four wheel speeds. Socket stays open for session lifetime with 3s recv timeout. **Rotation `z` uses degrees, not radians.**
 - **LiDAR positioning — wall fitting (current)**: ROS topic `/scan` (`sensor_msgs/LaserScan`). **Wall straight-line modeling via RANSAC**: `fit_walls()` in `utils/wall_positioning.py` downsamples the scan, detects corners via Cartesian gap analysis, splits points into 4 wall groups, fits each with RANSAC, and returns perpendicular distances to the front/right/rear/left walls plus yaw angle from the front wall's normal vector. Offset is 0 (raw distances = absolute coordinates). See "Wall positioning system" below.
 - **LiDAR positioning — raw beam (legacy, for target correction only)**: Front beam = `ranges[n//2]` → X. Side beam = `ranges[n//4]` → Y. Rear beam = `ranges[n-2]`. Left beam = `ranges[n*3//4]`. Still used by `_get_beam()` in `run.py` for target-point correction beam readings and in `target_points.py` for recording correction coordinates.
+- **Emergency escape**: When path planning fails entirely, `run.py` falls back to `utils/emergency_escape.py` — a gradient-descent algorithm that scores nearby positions by danger (inverse distance to obstacles + forbidden zones), then steps toward the safest adjacent position. Accelerates when moving in the same direction across successive probes. Max rounds configured in `config.yaml` → `client.max_probe_rounds`.
 - **Coordinate system**: X decreases toward the front wall, Y increases away from the right wall. The car's position is `(前墙距离, 右墙距离)` — distance from front wall and right wall respectively.
 - **Angle detection**: `fit_walls()` returns `yaw` (degrees) from the front wall's fitted normal vector. Positive = car nose points left. `/SyncYaw` rotates to zero this angle.
 - **Movement feedback**: Commands move the car, then `/MoveOnlyX` and `/MoveOnlyY` poll wall-based `getx()`/`gety()` for LiDAR closed-loop correction (0.08m tolerance, up to 5 retries).
@@ -59,7 +60,9 @@ The biggest architectural change from the original single-beam approach. `utils/
 
 Returns: `{"前墙": dist_m, "右墙": dist_m, "后墙": dist_m, "左墙": dist_m, "yaw": deg}`. Failed walls return `None`.
 
-**Critical detail — wall fitting uses obstacle-filtered points**: obstacles are excluded so they don't distort the wall line. This means obstacle detection must work for positioning to be accurate.
+**Critical detail — wall fitting uses obstacle-filtered points**: obstacles are excluded so they don't distort the wall line. This means obstacle detection must work for positioning to be accurate. The obstacle mask is produced by `get_obstacle_beam_mask()` in `wall_positioning.py`, which imports low-level beam analysis functions from `obstacle_detector.py`.
+
+**Beam analysis cache**: `get_obstacle_beam_mask()` caches the full beam analysis result (`hit_dist`, `hit_angles`, `valid_mask`, `n_beams`, `valid_count`, `obstacle_beam`) in module-level `_beam_cache`. `detect_obstacles()` then reads this via `get_cached_beam_analysis()` to avoid re-computing beam analysis and jump detection on the same LiDAR frame. This is separate from the wall-fitting result cache.
 
 **50ms cache**: `_read_walls()` (in `run.py` and `CarControlServiceFlask.py`) and `_read_position()` (in `path_planner.py`) cache the last `fit_walls()` result for 50ms to avoid re-reading `/scan` when multiple functions call positioning in quick succession. This is intentionally duplicated across modules (same reason as the old LiDAR duplication — ROS topic contention).
 
@@ -73,7 +76,7 @@ car/
 │   ├── CarControlServiceFlask.py   # Flask server (port 5000), ROS node, chassis TCP
 │   └── run.py                      # Main entry point (interactive + --external modes)
 ├── entities/                # Business logic
-│   ├── obstacle_detector.py        # 5-stage obstacle detection
+│   ├── obstacle_detector.py        # 6-stage obstacle detection (jump + wall deviation)
 │   ├── path_planner.py             # A* path planning
 │   ├── forbidden_zones.py          # Forbidden zone CLI + geometry checks
 │   ├── forbidden_zones.json        # Forbidden zone data
@@ -83,13 +86,11 @@ car/
 ├── utils/                   # Utilities
 │   ├── config_loader.py            # Custom YAML config loader
 │   ├── wall_positioning.py         # RANSAC wall-fitting positioning (current)
+│   ├── emergency_escape.py         # Gradient-descent danger-escape algorithm
 │   └── visualize_path.py           # Path visualization → PNG
-├── wall_positioning_test.py        # Wall positioning standalone test
-├── test_obstacle_debug.py          # Obstacle detection debug script (live LiDAR)
-└── path_simulator.py               # Offline path planning simulator (matplotlib GUI)
 ```
 
-**Note**: There is no `tests/` directory. Standalone test/debug scripts live at the project root: `wall_positioning_test.py` and `test_obstacle_debug.py`.
+**Note**: There is no `tests/` directory. Testing is done by running the main entry points interactively or with standalone scripts.
 
 ### Core modules
 
@@ -99,15 +100,13 @@ car/
 | `controllers/CarControlServiceFlask.py` | Flask server (port 5000), ROS node, chassis TCP. 9 REST endpoints. Uses wall fitting for all positioning. Defines `getsum()`/`getsum_y()` locally for sanity checks. |
 | `controllers/run.py` | **Main entry point**. Interactive loop (1~7=target, Q=quit) or `--external` mode (HTTP API on port 6000 for airplane/arm coordination). Uses wall fitting for positioning, raw beams for target correction. Auto-detects room size on startup. |
 | `utils/wall_positioning.py` | **Current positioning system**. `fit_walls()` — RANSAC wall line fitting from LiDAR scan. Returns 4 wall distances + yaw. Used by server, run.py, and path_planner. |
-| `entities/obstacle_detector.py` | 5-stage obstacle detection: analyze → jump detect → expand → cluster → filter. Also provides `get_obstacle_beam_mask()` for wall fitting. |
+| `entities/obstacle_detector.py` | 6-stage obstacle detection: beam analysis → jump detect → expand → **wall deviation detect** → cluster → filter (bounds + forbidden zones). Wall deviation stage calls `fit_walls()` internally and fuses its results with jump-based detection. |
 | `entities/path_planner.py` | A* path planning. Avoids obstacles, forbidden zones, walls. Self-loads zones. Uses wall fitting for car position. |
 | `entities/forbidden_zones.py` | Forbidden zone CLI + geometry checks (`point_in_forbidden`, `segment_crosses_forbidden`). Saves to `forbidden_zones.json`. |
 | `entities/target_points.py` | Interactive 7-point recording. Each point has `plan` (front+right beams) and optionally `correct` (point-specific beams). Saves to `target_points.json`. |
 | `entities/action_for_each_target.py` | Per-point sequential action list (correct / rotate / stay / move_rel). |
+| `utils/emergency_escape.py` | Gradient-descent danger escape. `danger_score()` scores positions by proximity to obstacles/zones; `escape_danger_zone()` steps toward safest adjacent position each round. Used by `run.py` as last-resort fallback when path planning fails. |
 | `utils/visualize_path.py` | Matplotlib-based path visualization. Draws room, walls, forbidden zones, obstacles, path waypoints, correction points. Outputs PNG to `/tmp/path_plan.png`. |
-| `wall_positioning_test.py` | Standalone wall positioning test. Compares wall-fitting distances vs traditional single-beam readings. Requires ROS + LiDAR. |
-| `test_obstacle_debug.py` | Obstacle detection debug script. Prints car position + detected obstacles live. Requires ROS + LiDAR. |
-| `path_simulator.py` | Offline interactive simulator. Click to place start/goal/obstacles/zones, see A* path + correction points in real time. No ROS/LiDAR needed. |
 
 ### Dual positioning system
 
@@ -161,15 +160,17 @@ Point 7 ("return to start") correction beams use the start position's recorded b
 
 ```
 obstacle_detector  ←  forbidden_zones (filter obstacles in zones)
-       ↑                        ↑
-wall_positioning   ←  obstacle_detector (get_obstacle_beam_mask for filtering)
-       ↑                        ↑
+       ↕                        ↑
+wall_positioning   ←  obstacle_detector (_analyze_beams, _detect_jumps, _expand_obstacle_beams)
+       ↑                        ↑          ←  obstacle_detector also calls fit_walls() for wall deviation detection
 path_planner  ←  forbidden_zones (avoid) + wall_positioning (car position)
        ↑
-run  ←  target_points + action_for_each_target + wall_positioning + Flask endpoints
+run  ←  target_points + action_for_each_target + wall_positioning + emergency_escape + Flask endpoints
        ↑
 CarControlServiceFlask  ←  wall_positioning (all LiDAR reads) + local getsum/getsum_y
 ```
+
+**Circular dependency**: `wall_positioning.py` ↔ `obstacle_detector.py`. `get_obstacle_beam_mask()` lives in `wall_positioning.py` and imports `_analyze_beams`/`_detect_jumps`/`_expand_obstacle_beams` from obstacle_detector to produce a mask of obstacle-hit beam indices. Meanwhile, `detect_obstacles()` in obstacle_detector calls `fit_walls()` from wall_positioning to get wall lines for the wall-deviation detection stage. Both modules cache beam analysis results (`_beam_cache` in wall_positioning, reused by obstacle_detector via `get_cached_beam_analysis()`) to avoid duplicate computation on the same LiDAR frame.
 
 **Integration gap**: The Flask server has no awareness of obstacles or planned paths — all intelligence lives in the pipeline client (`run.py`).
 
@@ -241,15 +242,6 @@ python3 entities/target_points.py
 
 # A* path planning (standalone, requires ROS + LiDAR)
 python3 entities/path_planner.py <target_x> <target_y> [num_waypoints]
-
-# Wall positioning test (requires ROS + LiDAR)
-python3 wall_positioning_test.py
-
-# Obstacle detection debug — live car position + obstacles (requires ROS + LiDAR)
-python3 test_obstacle_debug.py
-
-# Offline path planning simulator (no ROS/LiDAR needed, matplotlib GUI)
-python3 path_simulator.py
 ```
 
 ## Key conventions
@@ -272,7 +264,7 @@ Uses 0.00001m tolerance (vs 0.08m for all others). LiDAR noise can cause infinit
 
 ### Obstacle detection intermittency
 
-Objects near detection thresholds (JUMP_THRESHOLD=0.3, CLUSTER_MIN_BEAMS=3) are sometimes missed. Sensitive to LiDAR noise and angle.
+Objects near detection thresholds (jump_threshold, cluster_min_beams, wall_deviation_threshold — all configurable in `config.yaml`) are sometimes missed. Sensitive to LiDAR noise and angle.
 
 ### Duplicated LiDAR reading + cache (intentional)
 

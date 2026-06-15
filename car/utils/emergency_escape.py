@@ -34,7 +34,7 @@ def escape_danger_zone(cx, cy, obstacles, zones, cli,
 
         # 四方向打分，选最安全
         best_dx, best_dy, best_score = 0, 0, danger_score(cx, cy, obstacles, zones)
-        for dx, dy in [(0.1, 0), (-0.1, 0), (0, 0.1), (0, -0.1)]:
+        for dx, dy in [(0.2, 0), (-0.2, 0), (0, 0.2), (0, -0.2)]:
             s = danger_score(cx + dx, cy + dy, obstacles, zones)
             if s < best_score:
                 best_dx, best_dy, best_score = dx, dy, s
@@ -43,12 +43,12 @@ def escape_danger_zone(cx, cy, obstacles, zones, cli,
 
         # 同方向连续则加速
         cur_dir = (best_dx, best_dy)
-        step = 0.1 * (same_dir_count + 1) if cur_dir == last_dir else 0.1
+        step = 0.2 * (same_dir_count + 1) if cur_dir == last_dir else 0.2
         same_dir_count = same_dir_count + 1 if cur_dir == last_dir else 0
         last_dir = cur_dir
 
-        target_x = cx + best_dx * step / 0.1
-        target_y = cy + best_dy * step / 0.1
+        target_x = cx + best_dx * step / 0.2
+        target_y = cy + best_dy * step / 0.2
         print(f"  [避险] 离开危险区{probe+1}: ({cx:.3f},{cy:.3f}) → ({target_x:.3f},{target_y:.3f})  obs={min_obs:.3f}m step={step:.1f}m")
 
         ok, resp = cli.move_relative(-(target_x - cx), -(target_y - cy))

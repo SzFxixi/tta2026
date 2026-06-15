@@ -66,9 +66,22 @@ def _read_walls(walls=None):
     return _walls_cache
 
 def car_position():
-    """规划坐标 — 前墙距离(X) + 右墙距离(Y)。返回 (x, y) 或 (None, None)"""
+    """规划坐标 — 前墙距离(X) + 右墙距离(Y)。
+    若某墙被遮挡，用对面墙推算。返回 (x, y) 或 (None, None)。"""
     w = _read_walls()
-    return w.get("前墙"), w.get("右墙")
+    x = w.get("前墙")
+    y = w.get("右墙")
+    if x is None:
+        rear = w.get("后墙")
+        if rear is not None:
+            rw = cfg.room.x_max - cfg.room.x_min
+            x = rw - rear
+    if y is None:
+        left = w.get("左墙")
+        if left is not None:
+            rh = cfg.room.y_max - cfg.room.y_min
+            y = rh - left
+    return x, y
 
 def get_x():
     """后墙距离 (m)，墙壁建模。"""
@@ -166,80 +179,98 @@ def _point_to_segment_dist(px, py, ax, ay, bx, by):
 
 def _move_segment_monitored(x1, y1, x2, y2, cli,
                              drift_threshold=DRIFT_THRESHOLD):
-    """整段移动 + 后台实时监控。LiDAR 非阻塞读取，偏了立刻标记。"""
-    dx_total = x2 - x1
-    dy_total = y2 - y1
-    seg_len = math.hypot(dx_total, dy_total)
-    if seg_len < 0.001:
-        return True, None, False
-
+    """整段移动 + 后台实时监控。偏移偏大时立即打断校正，然后继续剩余距离。"""
+    seg_start_x, seg_start_y = x1, y1
     yaw_threshold = cfg.server.sync_yaw_threshold_deg
-    result = {"ok": None, "resp": None, "drifted": False, "correct": None}
 
-    # 后台线程：发底盘移动指令（HTTP 阻塞）
-    def _do_move():
-        ok, resp = cli.move_relative(-dx_total, -dy_total)
-        result["ok"] = ok
-        result["resp"] = resp
+    while True:
+        dx_rem = x2 - seg_start_x
+        dy_rem = y2 - seg_start_y
+        seg_len = math.hypot(dx_rem, dy_rem)
+        if seg_len < 0.05:  # 剩余距离足够短，视为完成
+            return True, None, False
 
-    t = threading.Thread(target=_do_move)
-    t.start()
+        result = {"ok": None, "resp": None, "drifted": False, "correct": None, "interrupt": False, "yaw_interrupt": False}
 
-    # 主线程：边走边读 LiDAR（非阻塞，从后台线程缓存取）
-    while t.is_alive():
-        time.sleep(0.15)
-        cx, cy = car_position()
-        yaw = _read_angle_deviation()
+        def _do_move():
+            ok, resp = cli.move_relative(-dx_rem, -dy_rem)
+            result["ok"] = ok
+            result["resp"] = resp
 
-        if cx is None or cy is None:
-            continue
+        t = threading.Thread(target=_do_move)
+        t.start()
 
-        drift = _point_to_segment_dist(cx, cy, x1, y1, x2, y2)
+        # 主线程：边走边读 LiDAR
+        while t.is_alive():
+            time.sleep(0.15)
+            cx, cy = car_position()
+            yaw = _read_angle_deviation()
 
-        if drift > HARD_DRIFT:
-            status = "严重偏移"
-        elif drift > drift_threshold:
-            status = "偏移偏大"
-        elif yaw is not None and abs(yaw) > yaw_threshold:
-            status = "偏角过大"
-        else:
-            status = "正常"
+            if cx is None or cy is None:
+                continue
 
-        yaw_str = f"{yaw:.1f}°" if yaw is not None else "-"
-        print(f"  X={cx:.3f} Y={cy:.3f}  偏角={yaw_str}  偏离={drift:.3f}m  {status}")
-        last_x, last_y = cx, cy
+            drift = _point_to_segment_dist(cx, cy, seg_start_x, seg_start_y, x2, y2)
 
-        if drift > HARD_DRIFT:
-            result["drifted"] = True
-            t.join(timeout=5)
-            break
-        elif drift > drift_threshold:
-            result["correct"] = (cx, cy)  # 记下位置，移动完成后校正
-
-    t.join(timeout=30)
-
-    # 移动完成后：偏角过大 → 校正；中等偏移 → 相对位移校正
-    yaw = _read_angle_deviation()
-    if yaw is not None and abs(yaw) > yaw_threshold:
-        print(f"  偏角={yaw:.1f}° 过大，校正中...")
-        cli.sync_yaw()
-    if result["correct"]:
-        cx_before, cy_before = car_position()
-        if cx_before is not None and cy_before is not None:
-            if abs(dx_total) > 0.001:
-                cdx, cdy = 0.0, y1 - cy_before   # X 段：校正 Y
+            if drift > HARD_DRIFT:
+                status = "严重偏移"
+            elif drift > drift_threshold:
+                status = "偏移偏大"
+            elif yaw is not None and abs(yaw) > yaw_threshold:
+                status = "偏角过大"
             else:
-                cdx, cdy = x1 - cx_before, 0.0   # Y 段：校正 X
-            print(f"  垂直校正 前({cx_before:.3f},{cy_before:.3f}) + ({cdx:+.3f},{cdy:+.3f}) → 期望({cx_before+cdx:.3f},{cy_before+cdy:.3f})  规划线 Y={y1:.3f}" if abs(dx_total)>0.001 else f"  垂直校正 前({cx_before:.3f},{cy_before:.3f}) + ({cdx:+.3f},{cdy:+.3f}) → 期望({cx_before+cdx:.3f},{cy_before+cdy:.3f})  规划线 X={x1:.3f}")
-            cli.move_relative(cdx, cdy)
-            time.sleep(0.1)
-            cx_after, cy_after = car_position()
-            if cx_after is not None:
-                print(f"  校正后实际 ({cx_after:.3f},{cy_after:.3f})")
+                status = "正常"
 
-    if result["drifted"]:
-        return False, {"error": "drifted"}, True
-    return result["ok"], result["resp"], False
+            yaw_str = f"{yaw:.1f}°" if yaw is not None else "-"
+            print(f"  X={cx:.3f} Y={cy:.3f}  偏角={yaw_str}  偏离={drift:.3f}m  {status}")
+
+            if drift > HARD_DRIFT:
+                result["drifted"] = True
+                t.join(timeout=5)
+                break
+            elif drift > drift_threshold:
+                result["correct"] = (cx, cy)
+                result["interrupt"] = True
+                t.join(timeout=5)
+                break
+            elif yaw is not None and abs(yaw) > yaw_threshold:
+                result["yaw_interrupt"] = True
+                t.join(timeout=5)
+                break
+
+        t.join(timeout=30)
+
+        if result["drifted"]:
+            return False, {"error": "drifted"}, True
+
+        # 偏角过大 → 立即校正（监控中打断或移动完成后检查）
+        yaw = _read_angle_deviation()
+        if yaw is not None and abs(yaw) > yaw_threshold:
+            print(f"  偏角={yaw:.1f}° 过大，校正中...")
+            cli.sync_yaw()
+
+        if result["correct"]:
+            cx_before, cy_before = car_position()
+            if cx_before is not None and cy_before is not None:
+                if abs(dx_rem) > 0.001:
+                    cdx, cdy = 0.0, seg_start_y - cy_before   # X 段：校正 Y
+                else:
+                    cdx, cdy = seg_start_x - cx_before, 0.0   # Y 段：校正 X
+                action = "打断校正" if result["interrupt"] else "垂直校正"
+                print(f"  {action} 前({cx_before:.3f},{cy_before:.3f}) + ({cdx:+.3f},{cdy:+.3f}) → 期望({cx_before+cdx:.3f},{cy_before+cdy:.3f})  规划线 {'Y' if abs(dx_rem)>0.001 else 'X'}={'='+str(seg_start_y) if abs(dx_rem)>0.001 else '='+str(seg_start_x)}")
+                cli.move_relative(-cdx, -cdy)
+                time.sleep(0.1)
+                cx_after, cy_after = car_position()
+                if cx_after is not None:
+                    print(f"  校正后实际 ({cx_after:.3f},{cy_after:.3f})")
+                    if result["interrupt"]:
+                        # 更新起点为校正后位置，继续走剩余距离
+                        seg_start_x, seg_start_y = cx_after, cy_after
+                        continue  # 回到 while 循环，用剩余距离继续移动
+
+        # 正常完成（未被中断打断）
+        if not result["ok"]:
+            return False, result["resp"], False
+        return result["ok"], result["resp"], False
 
 
 _start_correct_beams = None  # (rear_beam, right_beam) 起点校正光束原始距离（暂保留）
@@ -305,49 +336,29 @@ def _do_correction(cli, expected_x, expected_y):
 
 
 def _do_target_correction(cli, pid, target_info):
-    """用校正光束坐标做精校"""
-    if "correct" not in target_info:
+    """用墙壁拟合坐标做精校（替代老的 raw beam 方案）"""
+    if "plan" not in target_info:
         return
-    stored_x, stored_y = target_info["correct"]
-    curr_x, curr_y, axes = _read_correct_beams(pid)
-    if curr_x is None or curr_y is None:
-        print("  ⚠ 校正光束无回波，跳过精校")
+    expected_x, expected_y = target_info["plan"]
+
+    if not _lidar_readings_sane():
+        print("  ⚠ LiDAR不可靠，跳过精校")
         return
 
-    # 前/后光束 → 绝对 X；左/右光束 → 绝对 Y
-    beam_cfg = {
-        1: ("front", "right"),
-        2: ("rear",  "right"),
-        3: ("rear",  "left"),
-        4: ("front", "left"),
-        5: ("rear",  "right"),
-        6: ("rear",  "right"),
-        7: ("rear",  "right"),
-    }
-    x_type, y_type = beam_cfg[pid]
+    cx, cy = car_position()
+    if cx is None or cy is None:
+        print("  ⚠ 定位失败，跳过精校")
+        return
 
-    # X 方向
-    if "x" in axes:
-        abs_curr_x = curr_x if x_type == "front" else ROOM_X_MAX - curr_x
-        abs_stored_x = stored_x if x_type == "front" else ROOM_X_MAX - stored_x
-        cdx = abs_stored_x - abs_curr_x
-    else:
-        cdx = 0.0
+    cdx = expected_x - cx   # LiDAR 差量：期望 − 当前
+    cdy = expected_y - cy
 
-    # Y 方向
-    if "y" in axes:
-        abs_curr_y = curr_y if y_type == "right" else ROOM_Y_MAX - curr_y
-        abs_stored_y = stored_y if y_type == "right" else ROOM_Y_MAX - stored_y
-        cdy = abs_stored_y - abs_curr_y
-    else:
-        cdy = 0.0
-
-    print(f"  精校: 存储({stored_x:.3f},{stored_y:.3f}) → 绝对({abs_stored_x:.3f},{abs_stored_y:.3f})")
-    print(f"        当前({curr_x:.3f},{curr_y:.3f}) → 绝对({abs_curr_x:.3f},{abs_curr_y:.3f})")
-    print(f"        底盘位移: ({cdx:+.3f}, {cdy:+.3f}) [校正轴: {axes}]")
+    print(f"  精校: 期望({expected_x:.3f},{expected_y:.3f})")
+    print(f"        当前({cx:.3f},{cy:.3f})")
+    print(f"        LiDAR差量 ({cdx:+.3f}, {cdy:+.3f}) → chassis发送 ({-cdx:+.3f}, {-cdy:+.3f})")
 
     if abs(cdx) > POS_THRESHOLD or abs(cdy) > POS_THRESHOLD:
-        cli.move_relative(cdx, cdy)
+        cli.move_relative(-cdx, -cdy)
 
 
 # ============================================================
@@ -526,7 +537,11 @@ def _execute_point(num, targets, zones, start_pos, cli, obstacles=None):
                 print(f"  停留位置: X={sx:.3f} Y={sy:.3f}  偏角={yaw_str}")
 
     print(f"  ✓ {label} 完成")
-    _last_good_position = (tx, ty)
+    sx, sy = car_position()
+    if sx is not None and sy is not None:
+        _last_good_position = (sx, sy)
+    else:
+        _last_good_position = (tx, ty)  # fallback
     return True
 
 

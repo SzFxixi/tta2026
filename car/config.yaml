@@ -28,9 +28,9 @@ server:
   long_distance_tolerance: 0.00001
   # SyncYaw: 偏角超过此阈值(度)才纠正
   sync_yaw_threshold_deg: 10.0
-  sync_yaw_step_min_deg: 5
-  sync_yaw_step_max_deg: 10.0
-  sync_yaw_max_iterations: 6
+  sync_yaw_step_min_deg: 3
+  sync_yaw_step_max_deg: 5.0
+  sync_yaw_max_iterations: 3
 
 # 客户端（pipeline 连接 Flask 的地址）
 client:
@@ -76,7 +76,7 @@ path_planning:
   grid_x_step: 0.2
   grid_y_step: 0.2
   # 膨胀半径2：最短路径判定阈值(m)。任一段 < 此值 → 最短路径被阻断，启用非最短路径
-  expansion_radius_2: 0.8
+  expansion_radius_2: 0.5
   # 膨胀半径3：硬过滤阈值(m)。任一段 < 此值 → 丢弃该候选路径
   expansion_radius_3: 0.5
 

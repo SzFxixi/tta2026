@@ -1,28 +1,26 @@
 #!/bin/bash
-# 一键启动智能小车服务
-# 顺序：roscore → lslidar → Flask
+# 启动顺序：roscore → lslidar → Flask
+# 日志保存在 ~/car2_logs/
 
-set -e
+LOG_DIR=~/car2_logs
+mkdir -p $LOG_DIR
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CAR_DIR="$SCRIPT_DIR/../car"
-LOG_DIR="$HOME/car2_logs"
-mkdir -p "$LOG_DIR"
-
-echo "=== 启动 roscore ==="
-roscore &
+echo "[1/3] 启动 roscore..."
+nohup roscore > $LOG_DIR/roscore.log 2>&1 &
 sleep 3
 
-echo "=== 启动 lslidar 驱动 ==="
-rosrun lslidar_driver lslidar_net &
-sleep 2
+echo "[2/3] 启动 lslidar..."
+nohup roslaunch lslidar_driver lslidar_net.launch > $LOG_DIR/lslidar.log 2>&1 &
+sleep 5
 
-echo "=== 启动 Flask 控制服务 ==="
-cd "$CAR_DIR"
-python3 controllers/CarControlServiceFlask.py &
+echo "[3/3] 启动 CarControlServiceFlask..."
+nohup python3 ~/catkin_ws/src/lsx10/scripts/CarControlServiceFlask.py > $LOG_DIR/flask.log 2>&1 &
 
 echo ""
-echo "全部服务已启动"
-echo "  日志: $LOG_DIR"
-echo "  停止: pkill -f 'roscore|lslidar_net|CarControlServiceFlask'"
-wait
+echo "全部启动完成！查看日志："
+echo "  tail -f ~/car2_logs/roscore.log"
+echo "  tail -f ~/car2_logs/lslidar.log"
+echo "  tail -f ~/car2_logs/flask.log"
+echo ""
+echo "停止所有服务："
+echo "  pkill -f 'roscore|lslidar_net|CarControlServiceFlask'"

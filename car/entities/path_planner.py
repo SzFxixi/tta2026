@@ -133,12 +133,15 @@ def _generate_nodes(sx, sy, ex, ey, obstacles, forbidden_zones=None,
     y_min = ROOM_Y_MIN + WALL_MARGIN
     y_max = ROOM_Y_MAX - WALL_MARGIN
 
+    margin = OBSTACLE_MARGIN if obstacle_margin is None else obstacle_margin
+
     nodes = set()
     x = x_min
     while x <= x_max + 0.0001:
         y = y_min
         while y <= y_max + 0.0001:
-            if _point_safe(x, y, obstacles, forbidden_zones=forbidden_zones,
+            if _point_safe(x, y, obstacles, margin=margin,
+                           forbidden_zones=forbidden_zones,
                            start=start, end=end):
                 nodes.add((round(x, 4), round(y, 4)))
             y += GRID_Y_STEP
@@ -148,7 +151,7 @@ def _generate_nodes(sx, sy, ex, ey, obstacles, forbidden_zones=None,
         y = y_min
         while y <= y_max + 0.0001:
             key = (round(bridge_x, 4), round(y, 4))
-            if key not in nodes and _point_safe(bridge_x, y, obstacles,
+            if key not in nodes and _point_safe(bridge_x, y, obstacles, margin=margin,
                                                  forbidden_zones=forbidden_zones,
                                                  start=start, end=end):
                 nodes.add(key)
@@ -157,7 +160,7 @@ def _generate_nodes(sx, sy, ex, ey, obstacles, forbidden_zones=None,
         x = x_min
         while x <= x_max + 0.0001:
             key = (round(x, 4), round(bridge_y, 4))
-            if key not in nodes and _point_safe(x, bridge_y, obstacles,
+            if key not in nodes and _point_safe(x, bridge_y, obstacles, margin=margin,
                                                  forbidden_zones=forbidden_zones,
                                                  start=start, end=end):
                 nodes.add(key)
@@ -384,11 +387,12 @@ def plan_path(start_x, start_y, end_x, end_y,
             candidates.append((_simplify_waypoints(apath), apath))
 
         survivors = []
+        effective_r3 = EXPANSION_RADIUS_3 * (om / OBSTACLE_MARGIN)
         for swp, raw in candidates:
             ok, min_d = _path_ok(swp, raw)
             if not ok:
                 continue
-            if min_d < EXPANSION_RADIUS_3:
+            if min_d < effective_r3:
                 continue
             corners = len(swp) - 2
             survivors.append((corners, swp, min_d))

@@ -5,7 +5,7 @@ ACTIONS = {
         {"type": "correct"},
         {"type": "rotate", "value": 90},
         {"type": "stay"},
-        {"type": "move_rel", "dx": 0, "dy": -0.5},
+        {"type": "move_rel", "dx": 0, "dy": -0.4},
         {"type": "stay"},
         {"type": "rotate", "value": -90},
     ],
