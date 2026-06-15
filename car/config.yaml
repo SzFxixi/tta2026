@@ -42,9 +42,11 @@ client:
   max_retries: 5
   lidar_beam_timeout: 3.0
   sanity_check_tolerance: 0.5
-  # 实时监控：偏离超此值 → 重规划；介于 drift_threshold 和此值之间 → 移动完成后校正
+  # 实时监控：偏离超此值 → 重规划；介于之间 → 移动完成后校正
   drift_threshold: 0.15
   hard_drift_threshold: 0.45
+  # 紧急避险：规划无解时最多探路轮数
+  max_probe_rounds: 10
 
 # 障碍物检测
 obstacle:

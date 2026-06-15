@@ -224,12 +224,18 @@ def _move_segment_monitored(x1, y1, x2, y2, cli,
         print(f"  偏角={yaw:.1f}° 过大，校正中...")
         cli.sync_yaw()
     if result["correct"]:
-        cx, cy = car_position()
-        if cx is not None and cy is not None:
-            cdx = x2 - cx
-            cdy = y2 - cy
-            print(f"  偏离偏大，校正位移 ({cdx:+.3f}, {cdy:+.3f})")
+        cx_before, cy_before = car_position()
+        if cx_before is not None and cy_before is not None:
+            if abs(dx_total) > 0.001:
+                cdx, cdy = 0.0, y1 - cy_before   # X 段：校正 Y
+            else:
+                cdx, cdy = x1 - cx_before, 0.0   # Y 段：校正 X
+            print(f"  垂直校正 前({cx_before:.3f},{cy_before:.3f}) + ({cdx:+.3f},{cdy:+.3f}) → 期望({cx_before+cdx:.3f},{cy_before+cdy:.3f})  规划线 Y={y1:.3f}" if abs(dx_total)>0.001 else f"  垂直校正 前({cx_before:.3f},{cy_before:.3f}) + ({cdx:+.3f},{cdy:+.3f}) → 期望({cx_before+cdx:.3f},{cy_before+cdy:.3f})  规划线 X={x1:.3f}")
             cli.move_relative(cdx, cdy)
+            time.sleep(0.1)
+            cx_after, cy_after = car_position()
+            if cx_after is not None:
+                print(f"  校正后实际 ({cx_after:.3f},{cy_after:.3f})")
 
     if result["drifted"]:
         return False, {"error": "drifted"}, True
@@ -434,6 +440,11 @@ def _execute_point(num, targets, zones, start_pos, cli, obstacles=None):
     if not (abs(cx - tx) < 0.05 and abs(cy - ty) < 0.05):
         print(f"\n  [规划] {label} 路径规划中...")
 
+        # 先离开危险区，再规划
+        from utils.emergency_escape import escape_danger_zone
+        cx, cy = escape_danger_zone(cx, cy, obstacles, zones, cli,
+                                     car_position_fn=car_position)
+
         result = plan_path(cx, cy, tx, ty, cx, cy, forbidden_zones=zones,
                            obstacles=obstacles)
         wp = result["waypoints"]
@@ -508,6 +519,11 @@ def _execute_point(num, targets, zones, start_pos, cli, obstacles=None):
                 _arm_signal.wait()
             else:
                 input("  >>> 按 Enter 继续...")
+            sx, sy = car_position()
+            yaw = _read_angle_deviation()
+            if sx is not None:
+                yaw_str = f"{yaw:.1f}°" if yaw is not None else "-"
+                print(f"  停留位置: X={sx:.3f} Y={sy:.3f}  偏角={yaw_str}")
 
     print(f"  ✓ {label} 完成")
     _last_good_position = (tx, ty)
