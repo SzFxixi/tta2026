@@ -1,16 +1,3 @@
-#!/usr/bin/env python3
-"""
-点位动作配置 — 每个点位到达后按顺序依次执行的动作列表。
-
-动作类型:
-    {"type": "correct"}                  — 校正坐标
-    {"type": "rotate", "value": 90}      — 旋转指定角度（度），正=逆时针
-    {"type": "stay"}                     — 等待操作者按 Enter 后继续
-    {"type": "move_rel", "dx": 0.2, "dy": 0}  — 相对位移（底盘坐标系）
-
-修改方式：直接编辑下方 ACTIONS 字典，每个点位是一个动作列表。
-"""
-
 ACTIONS = {
     1: [
         {"type": "correct"},

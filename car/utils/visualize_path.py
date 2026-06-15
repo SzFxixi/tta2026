@@ -22,7 +22,7 @@ def _load_zones():
         return []
 
 
-def visualize_plan(waypoints, correction_points=None, obstacles=None,
+def visualize_plan(waypoints, obstacles=None,
                    zones=None, start_label="S", end_label="E",
                    title="路径规划", save_path=None):
     """
@@ -30,7 +30,6 @@ def visualize_plan(waypoints, correction_points=None, obstacles=None,
 
     参数:
         waypoints:       [(x,y), ...]  路径点列表
-        correction_points: [{"index":i, "x":x, "y":y, "type":t, "safe":bool}, ...]
         obstacles:       [{"x":x, "y":y, "distance":d}, ...]
         zones:           [[xmin,xmax,ymin,ymax], ...]  禁区列表，None=自动加载
         title:           图标题
@@ -98,18 +97,6 @@ def visualize_plan(waypoints, correction_points=None, obstacles=None,
         ax.scatter(oxs, oys, c="darkorange", s=60, marker="X",
                    edgecolors="black", linewidth=0.5, zorder=7, label="障碍物")
 
-    # 校正点
-    if correction_points:
-        for cp in correction_points:
-            color = "#2e7d32" if cp.get("safe", True) else "#ff6f00"
-            marker = "*" if cp["type"] == "start" else ("o" if cp["type"] == "end" else "D")
-            size = 140 if cp["type"] in ("start", "end") else 80
-            ax.scatter(cp["x"], cp["y"], c=color, s=size, marker=marker,
-                       edgecolors="black", linewidth=0.5, zorder=8)
-            ax.annotate(cp["type"][0].upper(), (cp["x"], cp["y"]),
-                        textcoords="offset points", xytext=(0, 8),
-                        fontsize=6, fontweight="bold", ha="center", color=color)
-
     # 路径
     if waypoints and len(waypoints) >= 2:
         xs = [p[0] for p in waypoints]
@@ -155,10 +142,6 @@ def visualize_plan(waypoints, correction_points=None, obstacles=None,
     legend_elements.append(
         plt.Line2D([0], [0], marker="s", color="w", markerfacecolor="#b71c1c",
                    markersize=8, markeredgecolor="black", label="终点"))
-    if correction_points:
-        legend_elements.append(
-            plt.Line2D([0], [0], marker="D", color="w", markerfacecolor="#2e7d32",
-                       markersize=7, markeredgecolor="black", label="校正点"))
     ax.legend(handles=legend_elements, loc="lower right", fontsize=8)
 
     plt.tight_layout()

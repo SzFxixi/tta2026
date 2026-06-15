@@ -42,6 +42,10 @@ client:
   max_retries: 5
   lidar_beam_timeout: 3.0
   sanity_check_tolerance: 0.5
+  # 实时监控：每小步移动距离(m)，移动中垂直偏离规划线超过此值则打断重规划
+  monitor_step_size: 0.1
+  drift_threshold: 0.15
+  max_replans: 3
 
 # 障碍物检测
 obstacle:
@@ -56,6 +60,10 @@ obstacle:
   filter_x_max: 4.7
   filter_y_min: 0.2
   filter_y_max: 8.8
+  # 基于墙壁建模的偏差检测：实际距离比期望墙距小此值(米)则判定为障碍物
+  wall_deviation_threshold: 0.3
+  # 墙角附近(度)不参与墙壁偏差检测，因为期望墙距在墙角处不可靠
+  corner_margin_deg: 10.0
   # 检测前向 gety 反方向(左)侧移距离，减少盲区，0=关闭
   blind_spot_shift: 0.3
 
@@ -66,6 +74,10 @@ path_planning:
   grid_expand: 0.0
   grid_x_step: 0.1
   grid_y_step: 0.1
+  # 膨胀半径2：最短路径判定阈值(m)。任一段 < 此值 → 最短路径被阻断，启用非最短路径
+  expansion_radius_2: 0.5
+  # 膨胀半径3：硬过滤阈值(m)。任一段 < 此值 → 丢弃该候选路径
+  expansion_radius_3: 0.8
   cost_dist_weight: 1.0
   cost_risk_weight: 1.0
   correction_corridor_width: 0.6

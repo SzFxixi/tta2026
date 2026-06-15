@@ -119,31 +119,6 @@ class CarController:
         return success
 
 
+
 if __name__ == "__main__":
-    carController = CarController()
-    
-# Initialization 0.7 2
-# the point between Initialization and position I 3.28 2
-# position I 3.28 1.2
-# the point between position II and position I 3.28 2.8
-# position II 5.75 2.8
-    carController.Move(0.7,2)
-
-    carController.MoveOnlyX(3.1,2)
-    carController.MoveOnlyY(3.1,1.2)
-    carController.Move(3.28,1.2)
-
-    carController.MoveOnlyX(4,1.2)
-    carController.MoveOnlyY(4,2)
-    carController.MoveOnlyX(5.45,2)
-    carController.MoveOnlyY(5.45,2.8)
-    carController.Move(5.75,2.8)
-
-    carController.MoveOnlyX(6.2,2.8)
-    carController.MoveOnlyY(6.2,2)
-    carController.Move(7.84,2)
-
-    carController.MoveLongDistance(0.7,2)
-
-
-    carController.Reset()
+    main()

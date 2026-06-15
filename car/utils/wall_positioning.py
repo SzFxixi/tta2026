@@ -1,31 +1,14 @@
-#!/usr/bin/env python3
-"""
-墙壁直线建模定位 — 纯计算模块（不碰 ROS，由调用方传入 scan）。
-
-用法:
-    from utils.wall_positioning import fit_walls
-    scan = rospy.wait_for_message("scan", LaserScan)
-    result = fit_walls(scan)
-    # result = {"前墙": 2.30, "右墙": 4.80, "后墙": 2.50, "左墙": 5.10, "yaw": 2.0}
-"""
-
 import numpy as np
 import math
+import time
+
+# 跳变检测结果缓存，避免 detect_obstacles 和 fit_walls 重复计算同一帧 LiDAR
+_beam_cache = None
+_beam_cache_time = 0
+_BEAM_CACHE_TTL = 0.05  # 50ms
 
 
 def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
-    """
-    从一次 LiDAR 扫描中拟合墙壁，返回各墙垂直距离。
-
-    参数:
-        scan:             sensor_msgs/LaserScan 消息
-        sample_count:     均匀采样点数
-        filter_obstacles: 是否调用障碍物检测过滤
-        walls:            需要拟合的墙列表，如 ["前","右"]。None=全部四壁。
-    返回:
-        dict: {"前墙": dist_m, "右墙": dist_m, "后墙": dist_m, "左墙": dist_m, "yaw": deg}
-        拟合失败的墙键值为 None
-    """
     if walls is None:
         walls = ["前", "右", "后", "左"]
     need_front = "前" in walls
@@ -46,7 +29,6 @@ def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
     # ── 2. 障碍物过滤（复用传入的 scan，不自读） ──
     if filter_obstacles:
         try:
-            from entities.obstacle_detector import get_obstacle_beam_mask
             obs_mask_full = get_obstacle_beam_mask(0, 0, scan=scan)
             obs_mask = np.array([obs_mask_full[i] for i in indices], dtype=bool)
             is_valid = is_valid & (~obs_mask)
@@ -84,6 +66,7 @@ def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
 
     # ── 5. RANSAC 只拟合需要的墙 ──
     result = {"前墙": None, "右墙": None, "后墙": None, "左墙": None, "yaw": None}
+    _lines = {}
 
     for g in groups:
         cx, cy = g[:, 0].mean(), g[:, 1].mean()
@@ -94,18 +77,45 @@ def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
         line = _ransac_fit_line(g)
         if line is not None:
             result[label_en] = abs(line[2])
+            _lines[label_en] = line
 
-    # ── 6. 偏航角（仅当前墙需要时） ──
-    if need_front:
-        for g in groups:
-            cx, cy = g[:, 0].mean(), g[:, 1].mean()
-            if _wall_label(cx, cy) == "前墙":
-                line = _ransac_fit_line(g)
-                if line is not None:
-                    a, b = line[0], line[1]
-                    result["yaw"] = math.degrees(math.atan2(b, a))
-                break
+    # ── 6. 偏航角（前墙为主，左墙为备，inlier数量判可靠性） ──
+    def _yaw_from_normal(a, b):
+        return math.degrees(math.atan2(b, a))
 
+    def _normalize_angle(deg):
+        while deg > 180:
+            deg -= 360
+        while deg < -180:
+            deg += 360
+        return deg
+
+    MIN_INLIERS = 10
+
+    yaw_front = None
+    yaw_left = None
+
+    if "前墙" in _lines and _lines["前墙"][3] >= MIN_INLIERS:
+        a, b = _lines["前墙"][0], _lines["前墙"][1]
+        yaw_front = _yaw_from_normal(a, b)
+
+    if "左墙" in _lines and _lines["左墙"][3] >= MIN_INLIERS:
+        a, b = _lines["左墙"][0], _lines["左墙"][1]
+        raw = _yaw_from_normal(a, b)
+        yaw_left = _normalize_angle(raw + 90)
+
+    if yaw_front is not None and yaw_left is not None:
+        if abs(_normalize_angle(yaw_front - yaw_left)) < 10:
+            result["yaw"] = yaw_front
+        else:
+            better = "前墙" if _lines["前墙"][3] >= _lines["左墙"][3] else "左墙"
+            result["yaw"] = yaw_front if better == "前墙" else yaw_left
+    elif yaw_front is not None:
+        result["yaw"] = yaw_front
+    elif yaw_left is not None:
+        result["yaw"] = yaw_left
+
+    result["_lines"] = _lines
     return result
 
 
@@ -201,3 +211,57 @@ def _wall_label(cx, cy):
     elif 45 < ang <= 135:      return "左墙"
     elif ang > 135 or ang <= -135: return "后墙"
     else:                       return "右墙"
+
+
+def get_obstacle_beam_mask(car_x, car_y, scan=None, jump_threshold=None):
+    """
+    返回每个光束是否为障碍物的布尔掩码（True = 障碍物光束）。
+    管线：分析 → 突变检测 → 扩展 → 返回逐束掩码（不做聚类/过滤）。
+    用于 fit_walls() 墙壁建模时排除障碍物光束。
+    """
+    import rospy
+    from sensor_msgs.msg import LaserScan
+    from entities.obstacle_detector import _analyze_beams, _detect_jumps, _expand_obstacle_beams
+    from utils.config_loader import cfg as _cfg
+
+    if scan is None:
+        scan = rospy.wait_for_message("scan", LaserScan, timeout=_cfg.obstacle.lidar_timeout)
+    if jump_threshold is None:
+        jump_threshold = _cfg.obstacle.jump_threshold
+
+    hit_dist, hit_angles, valid_mask, n_beams, valid_count = \
+        _analyze_beams(scan, car_x, car_y)
+
+    if valid_count == 0:
+        obstacle_beam = np.zeros(n_beams, dtype=bool)
+        global _beam_cache, _beam_cache_time
+        _beam_cache = (hit_dist, hit_angles, valid_mask, n_beams, valid_count, obstacle_beam)
+        _beam_cache_time = time.time()
+        return obstacle_beam
+
+    jump_indices = _detect_jumps(hit_dist, valid_mask, n_beams, jump_threshold)
+    if len(jump_indices) < 2:
+        obstacle_beam = np.zeros(n_beams, dtype=bool)
+        _beam_cache = (hit_dist, hit_angles, valid_mask, n_beams, valid_count, obstacle_beam)
+        _beam_cache_time = time.time()
+        return obstacle_beam
+
+    obstacle_beam = _expand_obstacle_beams(
+        hit_dist, valid_mask, n_beams, jump_indices, jump_threshold)
+    obstacle_beam = np.array(obstacle_beam, dtype=bool)
+
+    # 缓存完整结果（含 jump_beam），供 detect_obstacles 复用
+    _beam_cache = (hit_dist, hit_angles, valid_mask, n_beams, valid_count, obstacle_beam)
+    _beam_cache_time = time.time()
+    return obstacle_beam
+
+
+def get_cached_beam_analysis():
+    """
+    返回最近一次 get_obstacle_beam_mask 的完整结果:
+    (hit_dist, hit_angles, valid_mask, n_beams, valid_count, jump_beam)
+    过期返回 None。
+    """
+    if _beam_cache is not None and (time.time() - _beam_cache_time) < _BEAM_CACHE_TTL:
+        return _beam_cache
+    return None

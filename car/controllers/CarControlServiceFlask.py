@@ -126,16 +126,6 @@ class CarService:
             except Exception:
                 pass
 
-    def getYaw(self):
-        self.channel.send("chassis position ?;".encode("utf-8"))
-        result = self.channel.recv(1024).decode('utf-8').split(' ')
-        _,_,yaw = map(float,result[:3])
-        return yaw
-
-    def set_baseline(self):
-        """已废弃 — 墙壁建模不需要基准。保留兼容旧 API。"""
-        pass
-
     def SyncYaw(self):
         """基于墙壁法向量的偏航角校正。"""
         for iteration in range(cfg.server.sync_yaw_max_iterations):
@@ -492,29 +482,6 @@ if __name__ == "__main__":
                 return jsonify(error_response), 400
 
             car.SyncYaw()
-            CurrentTaskID += 1
-            return jsonify({"isSuccess": True, "currentTaskId": CurrentTaskID})
-        except Exception as e:
-            return jsonify({"isSuccess": False, "errorCode": -1, "errorMessage": str(e)}), 500
-
-    @app.route('/SetBaseline', methods=['POST'])
-    def set_baseline():
-        """重新记录当前前后距离和与偏航角作为纠偏基准"""
-        try:
-            global CurrentTaskID
-            data = request.json
-            task_id_gotten = data['TaskId']
-
-            if task_id_gotten != CurrentTaskID + 1:
-                error_response = {
-                    "isSuccess": False,
-                    "errorCode": -1,
-                    "errorMessage": "TaskId mismatch",
-                    "expectedTaskId": CurrentTaskID + 1
-                }
-                return jsonify(error_response), 400
-
-            car.set_baseline()
             CurrentTaskID += 1
             return jsonify({"isSuccess": True, "currentTaskId": CurrentTaskID})
         except Exception as e:

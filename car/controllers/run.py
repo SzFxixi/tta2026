@@ -23,6 +23,9 @@ MOVE_TIMEOUT = cfg.client.move_timeout
 STEP_DELAY = cfg.client.step_delay
 POS_THRESHOLD = cfg.client.pos_threshold
 MAX_RETRIES = cfg.client.max_retries
+MONITOR_STEP = cfg.client.monitor_step_size
+DRIFT_THRESHOLD = cfg.client.drift_threshold
+MAX_REPLANS = cfg.client.max_replans
 
 ROOM_X_MAX = cfg.room.x_max
 ROOM_Y_MAX = cfg.room.y_max
@@ -137,20 +140,8 @@ class _Client:
         self.tid = 1
         return ok
 
-    def set_baseline(self):
-        return self._post("SetBaseline")
-
-    def sync_yaw(self):
-        return self._post("SyncYaw", timeout=20)
-
     def move_relative(self, dx, dy):
         return self._post("MoveRelative", {"delta_x": dx, "delta_y": dy})
-
-    def move_x(self, target_x, ref_y, correct=True):
-        return self._post("MoveOnlyX", {"location_x": target_x, "location_y": ref_y, "correct": correct})
-
-    def move_y(self, target_y, ref_x, correct=True):
-        return self._post("MoveOnlyY", {"location_x": ref_x, "location_y": target_y, "correct": correct})
 
     def circle(self, rad_z):
         return self._post("Circle", {"rad_z": rad_z})
@@ -160,27 +151,62 @@ class _Client:
 #  移动与校正
 # ============================================================
 
-def _move_segment(x1, y1, x2, y2, cli, correct=True):
-    """轴对齐移动一段。correct=False 纯开环(不读LiDAR)，correct=True 用LiDAR+闭环"""
-    dx, dy = x2 - x1, y2 - y1
-    if not correct:
-        # 非校正点：纯开环，拆成单轴移动，不碰 LiDAR
-        # 注意：底盘坐标系与 LiDAR 坐标系方向相反，delta 需要取反
-        if abs(dx) > 0.001:
-            ok, resp = cli.move_relative(-dx, 0)
-            if not ok:
-                return False, resp
-        if abs(dy) > 0.001:
-            ok, resp = cli.move_relative(0, -dy)
-            if not ok:
-                return False, resp
-        return True, None
-    # 校正点：读 LiDAR 算初始距离 + 服务端闭环(有 sanity check)
-    if abs(dx) > 0.001 and abs(dy) < 0.001:
-        return cli.move_x(x2, y1, correct=True)
-    elif abs(dy) > 0.001 and abs(dx) < 0.001:
-        return cli.move_y(y2, x1, correct=True)
-    return True, None
+def _point_to_segment_dist(px, py, ax, ay, bx, by):
+    """点 (px,py) 到线段 AB 的最短距离"""
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _move_segment_monitored(x1, y1, x2, y2, cli,
+                             step_size=MONITOR_STEP,
+                             drift_threshold=DRIFT_THRESHOLD):
+    """边走边看：拆成小步，每步后读 LiDAR 打印监控数据。
+    垂直偏离超过阈值 → 打断，返回 need_replan=True。"""
+    dx_total = x2 - x1
+    dy_total = y2 - y1
+    seg_len = math.hypot(dx_total, dy_total)
+    if seg_len < 0.001:
+        return True, None, False
+
+    n_steps = max(1, int(seg_len / step_size))
+    step_dx = dx_total / n_steps
+    step_dy = dy_total / n_steps
+
+    yaw_threshold = cfg.server.sync_yaw_threshold_deg
+
+    for i in range(n_steps):
+        ok, resp = cli.move_relative(-step_dx, -step_dy)
+        if not ok:
+            return False, resp, False
+
+        time.sleep(0.1)
+
+        cx, cy = car_position()
+        yaw = _read_angle_deviation()
+
+        if cx is None or cy is None:
+            print(f"  #{i+1}/{n_steps}  X=- Y=-  偏角=-  偏离=-  无回波")
+            continue
+
+        drift = _point_to_segment_dist(cx, cy, x1, y1, x2, y2)
+
+        if drift > drift_threshold:
+            status = "偏移过大"
+        elif yaw is not None and abs(yaw) > yaw_threshold:
+            status = "偏角过大"
+        else:
+            status = "正常"
+
+        yaw_str = f"{yaw:.1f}°" if yaw is not None else "-"
+        print(f"  #{i+1}/{n_steps}  X={cx:.3f} Y={cy:.3f}  偏角={yaw_str}  偏离={drift:.3f}m  {status}")
+
+        if drift > drift_threshold:
+            return False, {"error": "drifted", "drift": drift}, True
+
+    return True, None, False
 
 
 # 房间尺寸常量
@@ -305,13 +331,12 @@ def _print_obstacle_table(obstacles):
     print(f"  {'─' * 40}")
 
 
-def _print_waypoint_table(waypoints, correction_points):
+def _print_waypoint_table(waypoints):
     """表格形式打印路径点"""
-    cp_indices = {p["index"]: p for p in correction_points}
     print(f"\n  路径点 ({len(waypoints)}个):")
-    print(f"  {'─' * 45}")
-    print(f"  {'#':<4} {'X':<10} {'Y':<10} {'类型':<8} {'备注'}")
-    print(f"  {'─' * 45}")
+    print(f"  {'─' * 35}")
+    print(f"  {'#':<4} {'X':<10} {'Y':<10} {'类型':<8}")
+    print(f"  {'─' * 35}")
     for i, (x, y) in enumerate(waypoints):
         if i == 0:
             kind = "起点"
@@ -319,15 +344,8 @@ def _print_waypoint_table(waypoints, correction_points):
             kind = "终点"
         else:
             kind = "中间"
-
-        if i in cp_indices:
-            cp = cp_indices[i]
-            note = "✓可校正" if cp["safe"] else "⚠有遮挡"
-        else:
-            note = ""
-
-        print(f"  {i:<4} {x:<10.3f} {y:<10.3f} {kind:<8} {note}")
-    print(f"  {'─' * 45}")
+        print(f"  {i:<4} {x:<10.3f} {y:<10.3f} {kind:<8}")
+    print(f"  {'─' * 35}")
 
 
 # ============================================================
@@ -385,83 +403,60 @@ def _execute_point(num, targets, zones, start_pos, cli, obstacles=None):
     if not (abs(cx - tx) < 0.05 and abs(cy - ty) < 0.05):
         print(f"\n  [规划] {label} 路径规划中...")
 
-        # 起终点连线与X/Y轴夹角 < 15° → 偏好远离障碍物的路径(而非最短)
-        near_axis_deg = 15
-        a = math.degrees(math.atan2(abs(ty - cy), abs(tx - cx)))
-        near_axis = a < near_axis_deg or a > 90 - near_axis_deg
-        risk_weight = 1.0 if near_axis else 0.0
-        if near_axis:
-            print(f"  [规划] 起终点近轴(a={a:.1f}°)，启用远离障碍物偏好")
-
-        # 层层降级：A*无解时逐步减小膨胀半径
-        base_om = cfg.path_planning.obstacle_margin
-        base_ge = cfg.path_planning.grid_expand
-        levels = [
-            (base_om,       base_ge,       "默认"),
-            (base_om * 0.6, base_ge * 0.5, "降级1"),
-            (base_om * 0.3, base_ge * 0.2, "降级2"),
-            (base_om * 0.1, 0.0,           "降级3(最小)"),
-        ]
-        result = None
-        final_level = "默认"
-        for om, ge, level_name in levels:
-            if result is not None:
-                break
-            result = plan_path(cx, cy, tx, ty, cx, cy, forbidden_zones=zones,
-                               obstacles=obstacles,
-                               obstacle_margin=om, grid_expand=ge,
-                               cost_risk_weight=risk_weight)
-            if result["path_name"] == "先X后Y(安全无解)" or not result["safe"]:
-                print(f"  [规划] {level_name}: margin={om:.2f} expand={ge:.2f} → 无解，尝试降级...")
-                if level_name == levels[-1][2]:
-                    print(f"  [规划] 降至最小半径仍无解，使用安全路径")
-                    final_level = level_name
-                else:
-                    result = None
-            else:
-                final_level = level_name
+        result = plan_path(cx, cy, tx, ty, cx, cy, forbidden_zones=zones,
+                           obstacles=obstacles)
         wp = result["waypoints"]
-        cp = result.get("correction_points", [])
-        cp_indices = {p["index"]: p for p in cp}
-        print(f"  [规划] 路径={result['path_name']}({final_level})  段数={len(wp)-1}  校正点={len(cp)}")
+        print(f"  [规划] {result['path_name']}  段数={len(wp)-1}")
 
-        _print_waypoint_table(wp, cp)
+        _print_waypoint_table(wp)
 
         from utils.visualize_path import visualize_plan
-        visualize_plan(wp, correction_points=cp, obstacles=result.get("obstacles"),
+        visualize_plan(wp, obstacles=result.get("obstacles"),
                        zones=zones, title=f"路径规划: {label}", save_path="/tmp/path_plan.png")
 
-        for i in range(len(wp) - 1):
-            x1, y1 = wp[i]
-            x2, y2 = wp[i + 1]
+        replan_count = 0
+        seg_idx = 0
+        while seg_idx < len(wp) - 1:
+            x1, y1 = wp[seg_idx]
+            x2, y2 = wp[seg_idx + 1]
             dx, dy = x2 - x1, y2 - y1
-            axis = "X" if abs(dx) > 0.001 else "Y"
+            dist = abs(dx) if abs(dx) > 0.001 else abs(dy)
 
-            is_correction_point = i in cp_indices and cp_indices[i]["safe"]
-
-            if is_correction_point:
-                lidar_ok = _lidar_readings_sane()
-                if lidar_ok:
-                    print(f"  [校正] 路点#{i} ({x1:.3f},{y1:.3f}) SyncYaw →", end=" ")
-                    cli.sync_yaw()
-                    _do_correction(cli, x1, y1)
-                    # sync_yaw 可能旋转了车身，重新检查 LiDAR 读数
-                    lidar_ok = _lidar_readings_sane()
-                else:
-                    print(f"  [校正] 路点#{i} ({x1:.3f},{y1:.3f}) LiDAR异常，跳过校正")
+            if abs(dx) > 0.001:
+                print(f"  #{seg_idx}→#{seg_idx+1}  X  {x1:.3f} → {x2:.3f}  ({dist:.2f}m)")
             else:
-                lidar_ok = False
+                print(f"  #{seg_idx}→#{seg_idx+1}  Y  {y1:.3f} → {y2:.3f}  ({dist:.2f}m)")
 
-            # 校正点 + LiDAR 读数合理 → 服务端闭环；否则纯开环
-            use_correct = lidar_ok
-            print(f"  [移动] #{i}→#{i+1} {axis}: {x1:.3f}→{x2:.3f}" if axis=="X" else f"  [移动] #{i}→#{i+1} {axis}: {y1:.3f}→{y2:.3f}", end=" ")
-            ok, resp = _move_segment(x1, y1, x2, y2, cli, correct=use_correct)
+            ok, resp, need_replan = _move_segment_monitored(x1, y1, x2, y2, cli)
+
+            if need_replan:
+                replan_count += 1
+                print(f"  ✗ 偏离规划线 → 重规划 #{replan_count}")
+                if replan_count > MAX_REPLANS:
+                    print(f"  ⚠ 超过最大重规划次数 ({MAX_REPLANS})，放弃")
+                    return False
+
+                cx, cy = car_position()
+                if cx is None or cy is None:
+                    print("  ⚠ 无法定位，放弃")
+                    return False
+
+                result = plan_path(cx, cy, tx, ty, cx, cy,
+                                   forbidden_zones=zones, obstacles=obstacles)
+                wp = result["waypoints"]
+                seg_idx = 0
+                print(f"  [重规划#{replan_count}] {result['path_name']}  段数={len(wp)-1}")
+                _print_waypoint_table(wp)
+                visualize_plan(wp, obstacles=result.get("obstacles"),
+                               zones=zones, title=f"重规划#{replan_count}: {label}",
+                               save_path="/tmp/path_plan.png")
+                continue
+
             if not ok:
-                print(f"✗ {resp.get('errorMessage', resp.get('error', '?'))}")
+                print(f"  ✗ {resp.get('errorMessage', resp.get('error', '?'))}")
                 return False
-            angle = _read_angle_deviation()
-            angle_str = f"  偏角={angle:.1f}°" if angle is not None else ""
-            print(f"✓{angle_str}")
+
+            seg_idx += 1
             time.sleep(STEP_DELAY)
 
     # 执行动作
@@ -558,8 +553,6 @@ def main():
 
     cli = _Client()
     cli.reset()
-    # set_baseline 已废弃（墙壁建模不需要基准），保留调用兼容旧服务端
-    cli.set_baseline()
 
     start_x, start_y = car_position()
     global _last_good_position
