@@ -1,9 +1,11 @@
+
+# 这里x和y反了
 ACTIONS = {
     1: [
         {"type": "correct"},
         {"type": "rotate", "value": 90},
         {"type": "stay"},
-        {"type": "move_rel", "dx": 0, "dy": 0.2},
+        {"type": "move_rel", "dx": 0, "dy": -0.5},
         {"type": "stay"},
         {"type": "rotate", "value": -90},
     ],
@@ -32,9 +34,11 @@ ACTIONS = {
         {"type": "rotate", "value": 90},
     ],
     5: [
+        {"type": "correct"},
         {"type": "stay"},
     ],
     6: [
+        {"type": "correct"},
         {"type": "rotate", "value": 180},
         {"type": "stay"},
         {"type": "rotate", "value": -180},

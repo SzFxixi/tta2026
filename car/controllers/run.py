@@ -24,6 +24,7 @@ STEP_DELAY = cfg.client.step_delay
 POS_THRESHOLD = cfg.client.pos_threshold
 MAX_RETRIES = cfg.client.max_retries
 DRIFT_THRESHOLD = cfg.client.drift_threshold
+HARD_DRIFT = cfg.client.hard_drift_threshold
 
 ROOM_X_MIN = cfg.room.x_min
 ROOM_X_MAX = cfg.room.x_max
@@ -140,6 +141,9 @@ class _Client:
         self.tid = 1
         return ok
 
+    def sync_yaw(self):
+        return self._post("SyncYaw", timeout=20)
+
     def move_relative(self, dx, dy):
         return self._post("MoveRelative", {"delta_x": dx, "delta_y": dy})
 
@@ -170,7 +174,7 @@ def _move_segment_monitored(x1, y1, x2, y2, cli,
         return True, None, False
 
     yaw_threshold = cfg.server.sync_yaw_threshold_deg
-    result = {"ok": None, "resp": None, "drifted": False}
+    result = {"ok": None, "resp": None, "drifted": False, "correct": None}
 
     # 后台线程：发底盘移动指令（HTTP 阻塞）
     def _do_move():
@@ -192,8 +196,10 @@ def _move_segment_monitored(x1, y1, x2, y2, cli,
 
         drift = _point_to_segment_dist(cx, cy, x1, y1, x2, y2)
 
-        if drift > drift_threshold:
-            status = "偏移过大"
+        if drift > HARD_DRIFT:
+            status = "严重偏移"
+        elif drift > drift_threshold:
+            status = "偏移偏大"
         elif yaw is not None and abs(yaw) > yaw_threshold:
             status = "偏角过大"
         else:
@@ -203,21 +209,32 @@ def _move_segment_monitored(x1, y1, x2, y2, cli,
         print(f"  X={cx:.3f} Y={cy:.3f}  偏角={yaw_str}  偏离={drift:.3f}m  {status}")
         last_x, last_y = cx, cy
 
-        if drift > drift_threshold:
+        if drift > HARD_DRIFT:
             result["drifted"] = True
-            # 等移动线程结束
             t.join(timeout=5)
             break
+        elif drift > drift_threshold:
+            result["correct"] = (cx, cy)  # 记下位置，移动完成后校正
 
     t.join(timeout=30)
+
+    # 移动完成后：偏角过大 → 校正；中等偏移 → 相对位移校正
+    yaw = _read_angle_deviation()
+    if yaw is not None and abs(yaw) > yaw_threshold:
+        print(f"  偏角={yaw:.1f}° 过大，校正中...")
+        cli.sync_yaw()
+    if result["correct"]:
+        cx, cy = car_position()
+        if cx is not None and cy is not None:
+            cdx = x2 - cx
+            cdy = y2 - cy
+            print(f"  偏离偏大，校正位移 ({cdx:+.3f}, {cdy:+.3f})")
+            cli.move_relative(cdx, cdy)
+
     if result["drifted"]:
         return False, {"error": "drifted"}, True
     return result["ok"], result["resp"], False
 
-
-# 房间尺寸常量
-_ROOM_W = cfg.room.x_max - cfg.room.x_min
-_ROOM_H = cfg.room.y_max - cfg.room.y_min
 
 _start_correct_beams = None  # (rear_beam, right_beam) 起点校正光束原始距离（暂保留）
 
@@ -230,13 +247,23 @@ def _lidar_readings_sane():
     tol = cfg.client.sanity_check_tolerance
     if f is None or r is None or ri is None or l is None:
         return False
-    return abs(f + r - _ROOM_W) < tol and abs(ri + l - _ROOM_H) < tol
+    rw = cfg.room.x_max - cfg.room.x_min
+    rh = cfg.room.y_max - cfg.room.y_min
+    return abs(f + r - rw) < tol and abs(ri + l - rh) < tol
 
 
 def _read_angle_deviation():
-    """读取当前偏角（度），基于前墙法向量。"""
+    """读取当前偏角（度），归一化到 [-90, 90]。"""
     w = _read_walls()
-    return w.get("yaw")
+    yaw = w.get("yaw")
+    if yaw is None:
+        return None
+    # 归一化：>90° 则反向（墙壁法向量可能指反了）
+    while yaw > 90:
+        yaw -= 180
+    while yaw < -90:
+        yaw += 180
+    return yaw
 
 
 def _do_correction(cli, expected_x, expected_y):
@@ -297,19 +324,17 @@ def _do_target_correction(cli, pid, target_info):
     if "x" in axes:
         abs_curr_x = curr_x if x_type == "front" else ROOM_X_MAX - curr_x
         abs_stored_x = stored_x if x_type == "front" else ROOM_X_MAX - stored_x
-        cdx = abs_curr_x - abs_stored_x
+        cdx = abs_stored_x - abs_curr_x
     else:
         cdx = 0.0
-        abs_curr_x, abs_stored_x = 0, 0
 
     # Y 方向
     if "y" in axes:
         abs_curr_y = curr_y if y_type == "right" else ROOM_Y_MAX - curr_y
         abs_stored_y = stored_y if y_type == "right" else ROOM_Y_MAX - stored_y
-        cdy = abs_curr_y - abs_stored_y
+        cdy = abs_stored_y - abs_curr_y
     else:
         cdy = 0.0
-        abs_curr_y, abs_stored_y = 0, 0
 
     print(f"  精校: 存储({stored_x:.3f},{stored_y:.3f}) → 绝对({abs_stored_x:.3f},{abs_stored_y:.3f})")
     print(f"        当前({curr_x:.3f},{curr_y:.3f}) → 绝对({abs_curr_x:.3f},{abs_curr_y:.3f})")
@@ -557,13 +582,29 @@ def main():
     cli = _Client()
     cli.reset()
 
-    start_x, start_y = car_position()
+    # 从 LiDAR 实测房间尺寸，覆盖 config
+    w = _read_walls()
+    room_x = w.get("前墙", 0) + w.get("后墙", 0) if w.get("前墙") and w.get("后墙") else 0
+    room_y = w.get("右墙", 0) + w.get("左墙", 0) if w.get("右墙") and w.get("左墙") else 0
+    if room_x > 0 and room_y > 0:
+        cfg.room.x_min = 0.0
+        cfg.room.x_max = room_x
+        cfg.room.y_min = 0.0
+        cfg.room.y_max = room_y
+        # 障碍物过滤边界也跟着扩
+        cfg.obstacle.filter_x_max = room_x + 0.2
+        cfg.obstacle.filter_y_max = room_y + 0.2
+        print(f"房间实测: {room_x:.2f}×{room_y:.2f}m  (wall_margin={cfg.path_planning.wall_margin})")
+    else:
+        print(f"⚠ 房间测量失败，使用 config 默认值")
+
+    start_x, start_y = w.get("前墙"), w.get("右墙")
     global _last_good_position
     _last_good_position = (start_x, start_y)
     if start_x is not None:
-        print(f"\n起点已记录: ({start_x:.3f}, {start_y:.3f})")
+        print(f"起点: ({start_x:.3f}, {start_y:.3f})")
     else:
-        print("\n⚠ 起点定位失败")
+        print("⚠ 起点定位失败")
 
     global _start_correct_beams
     n = _get_n()

@@ -133,17 +133,37 @@ def _generate_nodes(sx, sy, ex, ey, obstacles, forbidden_zones=None,
     y_min = ROOM_Y_MIN + WALL_MARGIN
     y_max = ROOM_Y_MAX - WALL_MARGIN
 
-    nodes = []
+    nodes = set()
     x = x_min
     while x <= x_max + 0.0001:
         y = y_min
         while y <= y_max + 0.0001:
             if _point_safe(x, y, obstacles, forbidden_zones=forbidden_zones,
                            start=start, end=end):
-                nodes.append((x, y))
+                nodes.add((round(x, 4), round(y, 4)))
             y += GRID_Y_STEP
         x += GRID_X_STEP
 
+    for bridge_x in (sx, ex):
+        y = y_min
+        while y <= y_max + 0.0001:
+            key = (round(bridge_x, 4), round(y, 4))
+            if key not in nodes and _point_safe(bridge_x, y, obstacles,
+                                                 forbidden_zones=forbidden_zones,
+                                                 start=start, end=end):
+                nodes.add(key)
+            y += GRID_Y_STEP
+    for bridge_y in (sy, ey):
+        x = x_min
+        while x <= x_max + 0.0001:
+            key = (round(x, 4), round(bridge_y, 4))
+            if key not in nodes and _point_safe(x, bridge_y, obstacles,
+                                                 forbidden_zones=forbidden_zones,
+                                                 start=start, end=end):
+                nodes.add(key)
+            x += GRID_X_STEP
+
+    nodes = list(nodes)
     if (sx, sy) not in nodes:
         nodes.append((sx, sy))
     if (ex, ey) not in nodes:
@@ -391,30 +411,60 @@ def plan_path(start_x, start_y, end_x, end_y,
         om *= 0.8
         ge = max(0, ge * 0.5)
 
-    # ── 紧急避险：起点四方向逐步外扩，重新规划 ──
+    # ── 紧急避险：迭代探路，逐步远离危险，直到找到安全路径 ──
     if not _skip_escape:
-        best = {
+        def _danger_score(px, py):
+            s = 0.0
+            for o in obstacles:
+                s += 1.0 / max(math.hypot(px - o['x'], py - o['y']), 0.01)
+            if zones:
+                for zxmin, zxmax, zymin, zymax in zones:
+                    dx = max(zxmin - px, 0, px - zxmax)
+                    dy = max(zymin - py, 0, py - zymax)
+                    s += 2.0 / max(math.hypot(dx, dy), 0.01)
+            return s
+
+        print(f"  [避险] 起点危险，探路中...")
+        best_path = {
             "path_name": "先X后Y(安全无解)",
             "obstacle_margin": round(_path_min_dist_to_obstacles(
                 _simplify_waypoints([(sx, sy), (ex, sy), (ex, ey)]), obstacles), 3),
             "waypoints": _simplify_waypoints([(sx, sy), (ex, sy), (ex, ey)]),
-            "obstacles": obstacles,
-            "safe": False,
+            "obstacles": obstacles, "safe": False,
         }
-        for dist in [0.1, 0.2, 0.3, 0.4, 0.5]:
-            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                nsx, nsy = sx + dx * dist, sy + dy * dist
-                if not (ROOM_X_MIN <= nsx <= ROOM_X_MAX and ROOM_Y_MIN <= nsy <= ROOM_Y_MAX):
+        cx, cy = sx, sy
+        cur_score = _danger_score(cx, cy)
+
+        for it in range(20):
+            r = plan_path(cx, cy, ex, ey, car_x, car_y,
+                          forbidden_zones=forbidden_zones, obstacles=obstacles,
+                          obstacle_margin=obstacle_margin, grid_expand=grid_expand,
+                          _skip_escape=True)
+            if r and r["safe"]:
+                r["waypoints"] = [(sx, sy)] + r["waypoints"]
+                print(f"  [避险] 迭代{it} 找到安全路径")
+                return r
+            if r and r.get("obstacle_margin", 0) > best_path.get("obstacle_margin", 0):
+                best_path = r
+
+            # 四方向打分，选最安全的
+            best_nx, best_ny, best_ns = cx, cy, cur_score
+            for dx, dy in [(0.1, 0), (-0.1, 0), (0, 0.1), (0, -0.1)]:
+                nx, ny = cx + dx, cy + dy
+                if not (ROOM_X_MIN <= nx <= ROOM_X_MAX and ROOM_Y_MIN <= ny <= ROOM_Y_MAX):
                     continue
-                r = plan_path(nsx, nsy, ex, ey, car_x, car_y,
-                              forbidden_zones=forbidden_zones, obstacles=obstacles,
-                              obstacle_margin=obstacle_margin, grid_expand=grid_expand,
-                              _skip_escape=True)
-                if r and r["safe"]:
-                    return r
-                if r and r.get("obstacle_margin", 0) > best.get("obstacle_margin", 0):
-                    best = r
-        return best
+                s = _danger_score(nx, ny)
+                if s < best_ns:  # 分数越低越安全
+                    best_nx, best_ny, best_ns = nx, ny, s
+            if best_ns >= cur_score:
+                break  # 无法更安全了
+            cx, cy = best_nx, best_ny
+            cur_score = best_ns
+
+        if best_path.get("waypoints") and best_path["waypoints"][0] != (sx, sy):
+            best_path["waypoints"] = [(sx, sy)] + best_path["waypoints"]
+        print(f"  [避险] 未找到安全路径，选最佳备选")
+        return best_path
 
     # 兜底
     wp = _simplify_waypoints([(sx, sy), (ex, sy), (ex, ey)])

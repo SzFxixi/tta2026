@@ -6,9 +6,9 @@
 # 能够走的区域
 room:
   x_min: 0.4
-  x_max: 4.2
+  x_max: 4.8
   y_min: 0.4
-  y_max: 8.6
+  y_max: 9.2
   x_offset: 0.0
   y_offset: 0.0
 
@@ -42,23 +42,22 @@ client:
   max_retries: 5
   lidar_beam_timeout: 3.0
   sanity_check_tolerance: 0.5
-  # 实时监控：每小步移动距离(m)，移动中垂直偏离规划线超过此值则打断重规划
-  monitor_step_size: 0.1
+  # 实时监控：偏离超此值 → 重规划；介于 drift_threshold 和此值之间 → 移动完成后校正
   drift_threshold: 0.15
-  max_replans: 3
+  hard_drift_threshold: 0.45
 
 # 障碍物检测
 obstacle:
   lidar_timeout: 5.0
-  jump_threshold: 0.3
+  jump_threshold: 0.5
   expand_jump_ratio: 2.0
   cluster_min_beams: 3
   cluster_max_gap: 10
   cross_zero_merge_margin: 5
-  # 越界过滤用的房间边界（可略大于 room 边界）
-  filter_x_min: 0.2
-  filter_x_max: 4.7
-  filter_y_min: 0.2
+  # 障碍物过滤边界：超出此范围的视为噪声丢弃
+  filter_x_min: 0.3
+  filter_x_max: 4.6
+  filter_y_min: 0.3
   filter_y_max: 8.8
   # 基于墙壁建模的偏差检测：实际距离比期望墙距小此值(米)则判定为障碍物
   wall_deviation_threshold: 0.3
