@@ -324,10 +324,9 @@ def plan_path(start_x, start_y, end_x, end_y,
             use_shortest = True
             break
 
-    # ── 最短路径 + r2/r3 降级 ──
-    r2 = EXPANSION_RADIUS_2
-    r3 = EXPANSION_RADIUS_3
-    for level in range(4):
+    # ── 最短路径 + 一级降级 ──
+    for r2, r3, tag in [(EXPANSION_RADIUS_2, EXPANSION_RADIUS_3, ""),
+                          (EXPANSION_RADIUS_2 * 0.8, EXPANSION_RADIUS_3 * 0.8, "(降级)")]:
         survivors = []
         for swp, raw in shortest_candidates:
             ok, min_d = _path_ok(swp, raw)
@@ -341,18 +340,13 @@ def plan_path(start_x, start_y, end_x, end_y,
             survivors.sort(key=lambda x: x[0])
             corners, wp, margin = survivors[0]
             safe = margin >= r2
-            level_tag = f"(降级{level})" if level > 0 else ""
             return {
-                "path_name": f"最短路径{'（安全不足）' if not safe else ''}{level_tag}",
+                "path_name": f"最短路径{'（安全不足）' if not safe else ''}{tag}",
                 "obstacle_margin": round(margin, 3),
                 "waypoints": wp,
                 "obstacles": obstacles,
                 "safe": safe,
             }
-        r2 *= 0.8
-        r3 *= 0.8
-        if r3 < 0.12:
-            break
 
     # ── A* 非最短路径 + om 降级 ──
     om = OBSTACLE_MARGIN if obstacle_margin is None else obstacle_margin
