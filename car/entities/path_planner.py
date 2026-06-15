@@ -79,14 +79,21 @@ def _segment_safe(ax, ay, bx, by, obstacles, margin=OBSTACLE_MARGIN,
     for obs in obstacles:
         if _point_to_segment_dist(obs['x'], obs['y'], ax, ay, bx, by) < margin:
             return False
-    is_a_se = (start and abs(ax - start[0]) < 0.001 and abs(ay - start[1]) < 0.001) or \
-              (end   and abs(ax - end[0])   < 0.001 and abs(ay - end[1])   < 0.001)
-    is_b_se = (start and abs(bx - start[0]) < 0.001 and abs(by - start[1]) < 0.001) or \
-              (end   and abs(bx - end[0])   < 0.001 and abs(by - end[1])   < 0.001)
-    if is_a_se or is_b_se:
-        return True
     zones = forbidden_zones or _get_forbidden_zones()
-    if zones and segment_crosses_forbidden(ax, ay, bx, by, zones):
+    if not zones:
+        return True
+    # 只在端点本身落在禁区内时才豁免（让车能走出来）
+    a_in = point_in_forbidden(ax, ay, zones)
+    b_in = point_in_forbidden(bx, by, zones)
+    if start and abs(ax - start[0]) < 0.001 and abs(ay - start[1]) < 0.001 and a_in:
+        return True
+    if start and abs(bx - start[0]) < 0.001 and abs(by - start[1]) < 0.001 and b_in:
+        return True
+    if end and abs(ax - end[0]) < 0.001 and abs(ay - end[1]) < 0.001 and a_in:
+        return True
+    if end and abs(bx - end[0]) < 0.001 and abs(by - end[1]) < 0.001 and b_in:
+        return True
+    if segment_crosses_forbidden(ax, ay, bx, by, zones):
         return False
     return True
 
@@ -95,12 +102,16 @@ def _point_safe(px, py, obstacles, margin=OBSTACLE_MARGIN,
     for obs in obstacles:
         if math.hypot(px - obs['x'], py - obs['y']) < margin:
             return False
-    if start and abs(px - start[0]) < 0.001 and abs(py - start[1]) < 0.001:
-        return True
-    if end and abs(px - end[0]) < 0.001 and abs(py - end[1]) < 0.001:
-        return True
     zones = forbidden_zones or _get_forbidden_zones()
-    if zones and point_in_forbidden(px, py, zones):
+    if not zones:
+        return True
+    # 起/终点本身在禁区内 → 放行（车就在这）；否则正常检查
+    in_zone = point_in_forbidden(px, py, zones)
+    if start and abs(px - start[0]) < 0.001 and abs(py - start[1]) < 0.001:
+        return True  # 起点永远允许
+    if end and abs(px - end[0]) < 0.001 and abs(py - end[1]) < 0.001:
+        return True  # 终点永远允许
+    if in_zone:
         return False
     return True
 
@@ -224,14 +235,10 @@ def _check_forbidden(wp, zones, start, end):
     for i in range(len(wp) - 1):
         x1, y1 = wp[i]
         x2, y2 = wp[i + 1]
-        if start and abs(x1 - start[0]) < 0.001 and abs(y1 - start[1]) < 0.001:
-            continue
-        if start and abs(x2 - start[0]) < 0.001 and abs(y2 - start[1]) < 0.001:
-            continue
-        if end and abs(x1 - end[0]) < 0.001 and abs(y1 - end[1]) < 0.001:
-            continue
+        # 终点段豁免：允许进入目标点所在的禁区
         if end and abs(x2 - end[0]) < 0.001 and abs(y2 - end[1]) < 0.001:
-            continue
+            if point_in_forbidden(x2, y2, zones):
+                continue
         if segment_crosses_forbidden(x1, y1, x2, y2, zones):
             return False
     return True
@@ -243,7 +250,8 @@ def plan_path(start_x, start_y, end_x, end_y,
               jump_threshold=None,
               cluster_min_beams=None,
               obstacle_margin=None,
-              grid_expand=None):
+              grid_expand=None,
+              _skip_escape=False):
     om = OBSTACLE_MARGIN if obstacle_margin is None else obstacle_margin
     if obstacles is None:
         kwargs = {}
@@ -292,57 +300,129 @@ def plan_path(start_x, start_y, end_x, end_y,
         if abs(astar_len - manhattan) < 0.01:
             shortest_raw.append(astar_path)
 
-    shortest_candidates = []
+    # (简化版, 原始版) — 禁区检查用原始版（细粒度），距离计算用简化版
+    shortest_candidates = []  # [(simplified, raw)]
     seen = set()
     for wp in shortest_raw:
-        key = tuple((round(x, 3), round(y, 3)) for x, y in _simplify_waypoints(wp))
+        swp = _simplify_waypoints(wp)
+        key = tuple((round(x, 3), round(y, 3)) for x, y in swp)
         if key not in seen:
             seen.add(key)
-            shortest_candidates.append(_simplify_waypoints(wp))
+            shortest_candidates.append((swp, wp))
 
-    def _path_ok(wp):
-        if not _check_forbidden(wp, zones, se_start, se_end):
+    def _path_ok(simplified, raw=None):
+        check = raw if raw else simplified
+        if not _check_forbidden(check, zones, se_start, se_end):
             return False, float('inf')
-        d = _path_min_dist_to_obstacles(wp, obstacles)
+        d = _path_min_dist_to_obstacles(simplified, obstacles)
         return True, d
 
     use_shortest = False
-    for wp in shortest_candidates:
-        ok, d = _path_ok(wp)
+    for swp, raw in shortest_candidates:
+        ok, d = _path_ok(swp, raw)
         if ok and d >= EXPANSION_RADIUS_2:
             use_shortest = True
             break
 
-    if use_shortest:
-        candidates = shortest_candidates
-        path_name = "最短路径"
-    else:
+    # ── 最短路径 + r2/r3 降级 ──
+    r2 = EXPANSION_RADIUS_2
+    r3 = EXPANSION_RADIUS_3
+    for level in range(4):
+        survivors = []
+        for swp, raw in shortest_candidates:
+            ok, min_d = _path_ok(swp, raw)
+            if not ok:
+                continue
+            if min_d < r3:
+                continue
+            corners = len(swp) - 2
+            survivors.append((corners, swp, min_d))
+        if survivors:
+            survivors.sort(key=lambda x: x[0])
+            corners, wp, margin = survivors[0]
+            safe = margin >= r2
+            level_tag = f"(降级{level})" if level > 0 else ""
+            return {
+                "path_name": f"最短路径{'（安全不足）' if not safe else ''}{level_tag}",
+                "obstacle_margin": round(margin, 3),
+                "waypoints": wp,
+                "obstacles": obstacles,
+                "safe": safe,
+            }
+        r2 *= 0.8
+        r3 *= 0.8
+        if r3 < 0.12:
+            break
+
+    # ── A* 非最短路径 + om 降级 ──
+    om = OBSTACLE_MARGIN if obstacle_margin is None else obstacle_margin
+    ge = GRID_EXPAND if grid_expand is None else grid_expand
+    for level in range(5):
+        nodes = _generate_nodes(sx, sy, ex, ey, obstacles,
+                                forbidden_zones=forbidden_zones,
+                                obstacle_margin=om, grid_expand=ge,
+                                start=se_start, end=se_end)
+        apath, _ = _astar((sx, sy), (ex, ey), nodes, obstacles,
+                           forbidden_zones=forbidden_zones,
+                           obstacle_margin=om,
+                           se_start=se_start, se_end=se_end)
         candidates = []
-        if astar_path is not None:
-            candidates.append(_simplify_waypoints(astar_path))
-        path_name = "A*避障"
+        if apath is not None:
+            candidates.append((_simplify_waypoints(apath), apath))
 
-    survivors = []
-    for wp in candidates:
-        ok, min_d = _path_ok(wp)
-        if not ok:
-            continue
-        if min_d < EXPANSION_RADIUS_3:
-            continue
-        corners = len(_simplify_waypoints(wp)) - 2
-        survivors.append((corners, wp, min_d))
+        survivors = []
+        for swp, raw in candidates:
+            ok, min_d = _path_ok(swp, raw)
+            if not ok:
+                continue
+            if min_d < EXPANSION_RADIUS_3:
+                continue
+            corners = len(swp) - 2
+            survivors.append((corners, swp, min_d))
 
-    if survivors:
-        survivors.sort(key=lambda x: x[0])
-        corners, wp, margin = survivors[0]
-        return {
-            "path_name": path_name,
-            "obstacle_margin": round(margin, 3),
-            "waypoints": wp,
+        if survivors:
+            survivors.sort(key=lambda x: x[0])
+            corners, wp, margin = survivors[0]
+            level_tag = f"(降级{level})" if level > 0 else ""
+            return {
+                "path_name": "A*避障" + level_tag,
+                "obstacle_margin": round(margin, 3),
+                "waypoints": wp,
+                "obstacles": obstacles,
+                "safe": True,
+            }
+
+        if om <= 0.1:
+            break
+        om *= 0.8
+        ge = max(0, ge * 0.5)
+
+    # ── 紧急避险：起点四方向逐步外扩，重新规划 ──
+    if not _skip_escape:
+        best = {
+            "path_name": "先X后Y(安全无解)",
+            "obstacle_margin": round(_path_min_dist_to_obstacles(
+                _simplify_waypoints([(sx, sy), (ex, sy), (ex, ey)]), obstacles), 3),
+            "waypoints": _simplify_waypoints([(sx, sy), (ex, sy), (ex, ey)]),
             "obstacles": obstacles,
-            "safe": True,
+            "safe": False,
         }
+        for dist in [0.1, 0.2, 0.3, 0.4, 0.5]:
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nsx, nsy = sx + dx * dist, sy + dy * dist
+                if not (ROOM_X_MIN <= nsx <= ROOM_X_MAX and ROOM_Y_MIN <= nsy <= ROOM_Y_MAX):
+                    continue
+                r = plan_path(nsx, nsy, ex, ey, car_x, car_y,
+                              forbidden_zones=forbidden_zones, obstacles=obstacles,
+                              obstacle_margin=obstacle_margin, grid_expand=grid_expand,
+                              _skip_escape=True)
+                if r and r["safe"]:
+                    return r
+                if r and r.get("obstacle_margin", 0) > best.get("obstacle_margin", 0):
+                    best = r
+        return best
 
+    # 兜底
     wp = _simplify_waypoints([(sx, sy), (ex, sy), (ex, ey)])
     margin = _path_min_dist_to_obstacles(wp, obstacles)
     return {

@@ -23,11 +23,11 @@ MOVE_TIMEOUT = cfg.client.move_timeout
 STEP_DELAY = cfg.client.step_delay
 POS_THRESHOLD = cfg.client.pos_threshold
 MAX_RETRIES = cfg.client.max_retries
-MONITOR_STEP = cfg.client.monitor_step_size
 DRIFT_THRESHOLD = cfg.client.drift_threshold
-MAX_REPLANS = cfg.client.max_replans
 
+ROOM_X_MIN = cfg.room.x_min
 ROOM_X_MAX = cfg.room.x_max
+ROOM_Y_MIN = cfg.room.y_min
 ROOM_Y_MAX = cfg.room.y_max
 
 # 每个点位的校正光束索引表达式
@@ -161,34 +161,33 @@ def _point_to_segment_dist(px, py, ax, ay, bx, by):
 
 
 def _move_segment_monitored(x1, y1, x2, y2, cli,
-                             step_size=MONITOR_STEP,
                              drift_threshold=DRIFT_THRESHOLD):
-    """边走边看：拆成小步，每步后读 LiDAR 打印监控数据。
-    垂直偏离超过阈值 → 打断，返回 need_replan=True。"""
+    """整段移动 + 后台实时监控。LiDAR 非阻塞读取，偏了立刻标记。"""
     dx_total = x2 - x1
     dy_total = y2 - y1
     seg_len = math.hypot(dx_total, dy_total)
     if seg_len < 0.001:
         return True, None, False
 
-    n_steps = max(1, int(seg_len / step_size))
-    step_dx = dx_total / n_steps
-    step_dy = dy_total / n_steps
-
     yaw_threshold = cfg.server.sync_yaw_threshold_deg
+    result = {"ok": None, "resp": None, "drifted": False}
 
-    for i in range(n_steps):
-        ok, resp = cli.move_relative(-step_dx, -step_dy)
-        if not ok:
-            return False, resp, False
+    # 后台线程：发底盘移动指令（HTTP 阻塞）
+    def _do_move():
+        ok, resp = cli.move_relative(-dx_total, -dy_total)
+        result["ok"] = ok
+        result["resp"] = resp
 
-        time.sleep(0.1)
+    t = threading.Thread(target=_do_move)
+    t.start()
 
+    # 主线程：边走边读 LiDAR（非阻塞，从后台线程缓存取）
+    while t.is_alive():
+        time.sleep(0.15)
         cx, cy = car_position()
         yaw = _read_angle_deviation()
 
         if cx is None or cy is None:
-            print(f"  #{i+1}/{n_steps}  X=- Y=-  偏角=-  偏离=-  无回波")
             continue
 
         drift = _point_to_segment_dist(cx, cy, x1, y1, x2, y2)
@@ -201,12 +200,19 @@ def _move_segment_monitored(x1, y1, x2, y2, cli,
             status = "正常"
 
         yaw_str = f"{yaw:.1f}°" if yaw is not None else "-"
-        print(f"  #{i+1}/{n_steps}  X={cx:.3f} Y={cy:.3f}  偏角={yaw_str}  偏离={drift:.3f}m  {status}")
+        print(f"  X={cx:.3f} Y={cy:.3f}  偏角={yaw_str}  偏离={drift:.3f}m  {status}")
+        last_x, last_y = cx, cy
 
         if drift > drift_threshold:
-            return False, {"error": "drifted", "drift": drift}, True
+            result["drifted"] = True
+            # 等移动线程结束
+            t.join(timeout=5)
+            break
 
-    return True, None, False
+    t.join(timeout=30)
+    if result["drifted"]:
+        return False, {"error": "drifted"}, True
+    return result["ok"], result["resp"], False
 
 
 # 房间尺寸常量
@@ -432,9 +438,6 @@ def _execute_point(num, targets, zones, start_pos, cli, obstacles=None):
             if need_replan:
                 replan_count += 1
                 print(f"  ✗ 偏离规划线 → 重规划 #{replan_count}")
-                if replan_count > MAX_REPLANS:
-                    print(f"  ⚠ 超过最大重规划次数 ({MAX_REPLANS})，放弃")
-                    return False
 
                 cx, cy = car_position()
                 if cx is None or cy is None:

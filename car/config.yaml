@@ -69,19 +69,15 @@ obstacle:
 
 # 路径规划
 path_planning:
-  obstacle_margin: 0.6
+  obstacle_margin: 0.5
   wall_margin: 0.5
   grid_expand: 0.0
-  grid_x_step: 0.1
-  grid_y_step: 0.1
+  grid_x_step: 0.2
+  grid_y_step: 0.2
   # 膨胀半径2：最短路径判定阈值(m)。任一段 < 此值 → 最短路径被阻断，启用非最短路径
-  expansion_radius_2: 0.5
+  expansion_radius_2: 0.8
   # 膨胀半径3：硬过滤阈值(m)。任一段 < 此值 → 丢弃该候选路径
-  expansion_radius_3: 0.8
-  cost_dist_weight: 1.0
-  cost_risk_weight: 1.0
-  correction_corridor_width: 0.6
-  correction_min_interval: 1.0
+  expansion_radius_3: 0.5
 
 # LiDAR 工具
 lidar:

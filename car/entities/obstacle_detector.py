@@ -309,7 +309,7 @@ def detect_obstacles(car_x, car_y,
         obstacle_beam = jump_beam
 
     all_dists = sorted([hit_dist[i] for i in range(n_beams) if valid_mask[i]])
-    diag = _compute_diag(n_beams, valid_count, len(jump_indices), all_dists)
+    diag = _compute_diag(n_beams, valid_count, sum(jump_beam), all_dists)
     if wall_dev_beam is not None:
         diag["wall_dev_beams"] = int(wall_dev_beam.sum())
 
