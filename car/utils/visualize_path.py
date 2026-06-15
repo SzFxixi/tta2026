@@ -9,7 +9,6 @@ import os, json
 
 from utils.config_loader import cfg
 
-
 def _load_zones():
     """加载禁区，失败返回 []"""
     try:
@@ -21,20 +20,10 @@ def _load_zones():
     except Exception:
         return []
 
-
 def visualize_plan(waypoints, obstacles=None,
                    zones=None, start_label="S", end_label="E",
                    title="路径规划", save_path=None):
-    """
-    绘制路径规划结果。
-
-    参数:
-        waypoints:       [(x,y), ...]  路径点列表
-        obstacles:       [{"x":x, "y":y, "distance":d}, ...]
-        zones:           [[xmin,xmax,ymin,ymax], ...]  禁区列表，None=自动加载
-        title:           图标题
-        save_path:       输出 PNG 路径，None=自动命名到 ~/path_plan.png
-    """
+    
     if zones is None:
         zones = _load_zones()
 
@@ -56,27 +45,27 @@ def visualize_plan(waypoints, obstacles=None,
     # 房间背景
     ax.add_patch(patches.Rectangle(
         (rx_min, ry_min), rx_max - rx_min, ry_max - ry_min,
-        facecolor="#eeeeee", edgecolor="black", linewidth=2, zorder=1))
+        facecolor="
 
     # 墙边距区域（不可规划）
     # 四边各画一条
     margins = [
-        (rx_min, safe_y_max, rx_max - rx_min, ry_max - safe_y_max),  # top
-        (rx_min, ry_min, rx_max - rx_min, wall_margin),               # bottom
-        (rx_min, ry_min, wall_margin, ry_max - ry_min),               # left
-        (safe_x_max, ry_min, rx_max - safe_x_max, ry_max - ry_min),   # right
+        (rx_min, safe_y_max, rx_max - rx_min, ry_max - safe_y_max),
+        (rx_min, ry_min, rx_max - rx_min, wall_margin),
+        (rx_min, ry_min, wall_margin, ry_max - ry_min),
+        (safe_x_max, ry_min, rx_max - safe_x_max, ry_max - ry_min),
     ]
     for mx, my, mw, mh in margins:
         ax.add_patch(patches.Rectangle(
             (mx, my), mw, mh,
-            facecolor="#ffcc80", alpha=0.35, hatch="///",
+            facecolor="
             edgecolor="none", zorder=2))
 
     # 安全规划区
     ax.add_patch(patches.Rectangle(
         (safe_x_min, safe_y_min), safe_x_max - safe_x_min, safe_y_max - safe_y_min,
-        facecolor="#c8e6c9", alpha=0.35,
-        edgecolor="#2e7d32", linewidth=1.5, linestyle="--", zorder=3))
+        facecolor="
+        edgecolor="
 
     # 禁区
     for i, (xmin, xmax, ymin, ymax) in enumerate(zones):
@@ -84,8 +73,8 @@ def visualize_plan(waypoints, obstacles=None,
         h = max(ymax - ymin, 0.03)
         ax.add_patch(patches.Rectangle(
             (xmin, ymin), w, h,
-            facecolor="#e53935", alpha=0.55,
-            edgecolor="#b71c1c", linewidth=1.2, zorder=4))
+            facecolor="
+            edgecolor="
         ax.text((xmin + xmax) / 2, (ymin + ymax) / 2, str(i + 1),
                 ha="center", va="center", fontsize=7,
                 fontweight="bold", color="white", zorder=5)
@@ -104,16 +93,16 @@ def visualize_plan(waypoints, obstacles=None,
         ax.plot(xs, ys, "b-", linewidth=2, alpha=0.7, zorder=6)
         ax.scatter(xs, ys, c="blue", s=25, zorder=7)
         # 起点/终点
-        ax.scatter(xs[0], ys[0], c="#1b5e20", s=120, marker="s",
+        ax.scatter(xs[0], ys[0], c="
                    edgecolors="black", linewidth=1, zorder=8, label="起点")
-        ax.scatter(xs[-1], ys[-1], c="#b71c1c", s=120, marker="s",
+        ax.scatter(xs[-1], ys[-1], c="
                    edgecolors="black", linewidth=1, zorder=8, label="终点")
         # 路点编号
         for i, (x, y) in enumerate(waypoints):
             offset = 10 if i % 2 == 0 else -15
             ax.annotate(str(i), (x, y), textcoords="offset points",
                         xytext=(0, offset), fontsize=6, ha="center",
-                        color="#1565c0", fontweight="bold")
+                        color="
 
     # -------------------------------------------------------
     ax.set_xlim(rx_min - 0.3, rx_max + 0.5)
@@ -125,10 +114,10 @@ def visualize_plan(waypoints, obstacles=None,
     ax.grid(True, alpha=0.25, zorder=0)
 
     legend_elements = [
-        patches.Patch(facecolor="#c8e6c9", alpha=0.35, edgecolor="#2e7d32",
+        patches.Patch(facecolor="
                       linestyle="--", label="安全规划区"),
-        patches.Patch(facecolor="#ffcc80", alpha=0.4, label="墙边距区域"),
-        patches.Patch(facecolor="#e53935", alpha=0.55, edgecolor="#b71c1c",
+        patches.Patch(facecolor="
+        patches.Patch(facecolor="
                       label="禁区"),
     ]
     if obstacles:
@@ -137,10 +126,10 @@ def visualize_plan(waypoints, obstacles=None,
                        markersize=8, markeredgecolor="black", markeredgewidth=0.5,
                        label="障碍物"))
     legend_elements.append(
-        plt.Line2D([0], [0], marker="s", color="w", markerfacecolor="#1b5e20",
+        plt.Line2D([0], [0], marker="s", color="w", markerfacecolor="
                    markersize=8, markeredgecolor="black", label="起点"))
     legend_elements.append(
-        plt.Line2D([0], [0], marker="s", color="w", markerfacecolor="#b71c1c",
+        plt.Line2D([0], [0], marker="s", color="w", markerfacecolor="
                    markersize=8, markeredgecolor="black", label="终点"))
     ax.legend(handles=legend_elements, loc="lower right", fontsize=8)
 

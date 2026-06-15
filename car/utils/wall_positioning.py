@@ -5,8 +5,7 @@ import time
 # 跳变检测结果缓存，避免 detect_obstacles 和 fit_walls 重复计算同一帧 LiDAR
 _beam_cache = None
 _beam_cache_time = 0
-_BEAM_CACHE_TTL = 0.05  # 50ms
-
+_BEAM_CACHE_TTL = 0.05
 
 def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
     if walls is None:
@@ -16,7 +15,6 @@ def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
     need_rear  = "后" in walls
     need_left  = "左" in walls
 
-    # ── 1. 均匀下采样 ──
     n_beams = len(scan.ranges)
     stride = max(1, n_beams // sample_count)
     indices = list(range(0, n_beams, stride))[:sample_count]
@@ -26,7 +24,6 @@ def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
 
     is_valid = (ranges > scan.range_min) & (ranges < scan.range_max) & np.isfinite(ranges)
 
-    # ── 2. 障碍物过滤（复用传入的 scan，不自读） ──
     if filter_obstacles:
         try:
             obs_mask_full = get_obstacle_beam_mask(0, 0, scan=scan)
@@ -38,11 +35,9 @@ def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
     if is_valid.sum() < 20:
         return {"前墙": None, "右墙": None, "后墙": None, "左墙": None, "yaw": None}
 
-    # ── 3. 笛卡尔坐标 ──
     xs = np.where(is_valid, ranges * np.cos(angles), np.nan)
     ys = np.where(is_valid, ranges * np.sin(angles), np.nan)
 
-    # ── 4. 墙角检测 + 分割 ──
     corner_indices = _find_corners(xs, ys, is_valid, min_sep=len(ranges) // 4)
 
     valid_idx_map = np.cumsum(is_valid) - 1
@@ -64,7 +59,6 @@ def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
     else:
         groups = _split_by_sectors(angles[is_valid], valid_points)
 
-    # ── 5. RANSAC 只拟合需要的墙 ──
     result = {"前墙": None, "右墙": None, "后墙": None, "左墙": None, "yaw": None}
     _lines = {}
 
@@ -79,7 +73,6 @@ def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
             result[label_en] = abs(line[2])
             _lines[label_en] = line
 
-    # ── 6. 偏航角（前墙为主，左墙为备，inlier数量判可靠性） ──
     def _yaw_from_normal(a, b):
         return math.degrees(math.atan2(b, a))
 
@@ -118,11 +111,7 @@ def fit_walls(scan, sample_count=200, filter_obstacles=True, walls=None):
     result["_lines"] = _lines
     return result
 
-
-# ============================================================
 #  内部函数
-# ============================================================
-
 def _ransac_fit_line(points, max_iters=80, inlier_thresh=0.05, min_inliers=5):
     n = len(points)
     if n < 2:
@@ -157,7 +146,6 @@ def _ransac_fit_line(points, max_iters=80, inlier_thresh=0.05, min_inliers=5):
     norm = math.hypot(a, b)
     return (a / norm, b / norm, c / norm, len(best_inliers))
 
-
 def _find_corners(xs, ys, is_valid, min_sep=30):
     n = len(xs)
     valid_idx = np.where(is_valid)[0]
@@ -173,7 +161,7 @@ def _find_corners(xs, ys, is_valid, min_sep=30):
         dx, dy = xs[ti] - xs[fi], ys[ti] - ys[fi]
         gap = math.hypot(dx, dy)
         mid = (fi + span // 2) % n
-        gaps.append((mid, gap + inf_count * 3.0))  # score = gap + inf_bonus
+        gaps.append((mid, gap + inf_count * 3.0))
     gaps.sort(key=lambda x: -x[1])
     selected = []
     for mid, _ in gaps:
@@ -182,7 +170,6 @@ def _find_corners(xs, ys, is_valid, min_sep=30):
         if len(selected) >= 4:
             break
     return sorted(selected)
-
 
 def _split_by_corners(points, corner_indices):
     n = len(points)
@@ -194,7 +181,6 @@ def _split_by_corners(points, corner_indices):
             groups.append(g)
     return groups
 
-
 def _split_by_sectors(angles, points):
     masks = [
         (angles >= -math.pi / 4) & (angles <= math.pi / 4),
@@ -204,7 +190,6 @@ def _split_by_sectors(angles, points):
     ]
     return [points[m] for m in masks if m.sum() >= 8]
 
-
 def _wall_label(cx, cy):
     ang = math.degrees(math.atan2(cy, cx))
     if -45 <= ang <= 45:       return "前墙"
@@ -212,13 +197,8 @@ def _wall_label(cx, cy):
     elif ang > 135 or ang <= -135: return "后墙"
     else:                       return "右墙"
 
-
 def get_obstacle_beam_mask(car_x, car_y, scan=None, jump_threshold=None):
-    """
-    返回每个光束是否为障碍物的布尔掩码（True = 障碍物光束）。
-    管线：分析 → 突变检测 → 扩展 → 返回逐束掩码（不做聚类/过滤）。
-    用于 fit_walls() 墙壁建模时排除障碍物光束。
-    """
+    
     import rospy
     from sensor_msgs.msg import LaserScan
     from entities.obstacle_detector import _analyze_beams, _detect_jumps, _expand_obstacle_beams
@@ -255,13 +235,8 @@ def get_obstacle_beam_mask(car_x, car_y, scan=None, jump_threshold=None):
     _beam_cache_time = time.time()
     return obstacle_beam
 
-
 def get_cached_beam_analysis():
-    """
-    返回最近一次 get_obstacle_beam_mask 的完整结果:
-    (hit_dist, hit_angles, valid_mask, n_beams, valid_count, jump_beam)
-    过期返回 None。
-    """
+    
     if _beam_cache is not None and (time.time() - _beam_cache_time) < _BEAM_CACHE_TTL:
         return _beam_cache
     return None

@@ -8,34 +8,24 @@ import math
 _CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "forbidden_zones.json")
 
-
-# ============================================================
 #  文件读写
-# ============================================================
-
 def _read_config():
     if not os.path.exists(_CONFIG_FILE):
         return None
     with open(_CONFIG_FILE, 'r') as f:
         return json.load(f)
 
-
 def _write_config(config):
     with open(_CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
 
-
-# ============================================================
 #  查询
-# ============================================================
-
 def load_forbidden_zones():
     """读取禁区配置。返回 zones 列表，无文件时返回 None。"""
     config = _read_config()
     if config is None:
         return None
     return config.get("zones", [])
-
 
 def list_forbidden_zones():
     """打印当前已保存的禁区列表。返回禁区数量。"""
@@ -44,19 +34,12 @@ def list_forbidden_zones():
         print("暂无禁区配置")
         return 0
     for i, (xmin, xmax, ymin, ymax) in enumerate(config["zones"]):
-        print(f"  #{i}: X[{xmin:.3f}~{xmax:.3f}] Y[{ymin:.3f}~{ymax:.3f}]")
+        print(f"
     return len(config["zones"])
 
-
-# ============================================================
 #  交互式设置
-# ============================================================
-
 def setup_forbidden_zones():
-    """
-    交互式设置禁区（覆盖已有配置）。移动小车到角点按 Enter，对角点按 Enter。
-    按 Q 退出。使用小车当前 LiDAR 绝对坐标。
-    """
+    
     from entities.path_planner import get_car_position
 
     zones = []
@@ -76,7 +59,7 @@ def setup_forbidden_zones():
         print(f"  角点2: ({cx2:.3f}, {cy2:.3f})")
 
         zones.append((min(cx1, cx2), max(cx1, cx2), min(cy1, cy2), max(cy1, cy2)))
-        print(f"  ✓ 禁区 #{len(zones)-1}: X[{zones[-1][0]:.3f}~{zones[-1][1]:.3f}] "
+        print(f"  ✓ 禁区
               f"Y[{zones[-1][2]:.3f}~{zones[-1][3]:.3f}]")
 
     config = {"zones": zones}
@@ -84,11 +67,7 @@ def setup_forbidden_zones():
     print(f"共 {len(zones)} 个禁区，已保存\n")
     return zones
 
-
-# ============================================================
 #  追加
-# ============================================================
-
 def add_forbidden_zone():
     """向已有配置追加一个禁区。需要 LiDAR 已就绪且小车在原地。"""
     from entities.path_planner import get_car_position
@@ -112,15 +91,11 @@ def add_forbidden_zone():
     config["zones"] = zones
     _write_config(config)
     idx = len(zones) - 1
-    print(f"  ✓ 已追加禁区 #{idx}: X[{zones[-1][0]:.3f}~{zones[-1][1]:.3f}] "
+    print(f"  ✓ 已追加禁区
           f"Y[{zones[-1][2]:.3f}~{zones[-1][3]:.3f}]\n")
     return True
 
-
-# ============================================================
 #  删除
-# ============================================================
-
 def delete_forbidden_zone(index=None):
     """
     删除指定索引的禁区。不传 index 则列出所有禁区让用户选择。
@@ -147,15 +122,11 @@ def delete_forbidden_zone(index=None):
     removed = zones.pop(index)
     config["zones"] = zones
     _write_config(config)
-    print(f"已删除禁区 #{index}: X[{removed[0]:.3f}~{removed[1]:.3f}] "
+    print(f"已删除禁区
           f"Y[{removed[2]:.3f}~{removed[3]:.3f}]")
     return True
 
-
-# ============================================================
 #  几何检测（全部使用绝对坐标）
-# ============================================================
-
 def point_in_forbidden(px, py, forbidden_zones):
     """点 (px,py) 是否在某个禁区内（均为绝对坐标）。"""
     if not forbidden_zones:
@@ -164,7 +135,6 @@ def point_in_forbidden(px, py, forbidden_zones):
         if xmin <= px <= xmax and ymin <= py <= ymax:
             return True
     return False
-
 
 def segment_crosses_forbidden(ax, ay, bx, by, forbidden_zones):
     """线段 AB 是否穿过某个禁区（分段采样检测，均为绝对坐标）。"""
@@ -189,11 +159,7 @@ def segment_crosses_forbidden(ax, ay, bx, by, forbidden_zones):
                 return True
     return False
 
-
-# ============================================================
 #  命令行入口
-# ============================================================
-
 if __name__ == "__main__":
     import sys
     import rospy

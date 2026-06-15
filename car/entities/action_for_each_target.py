@@ -43,5 +43,4 @@ ACTIONS = {
 
 
 def get_actions(pid):
-    """获取点位 pid 的动作列表（按顺序执行）"""
     return ACTIONS.get(pid, [])

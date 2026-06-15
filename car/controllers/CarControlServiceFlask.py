@@ -23,7 +23,7 @@ _ROOM_H = cfg.room.y_max - cfg.room.y_min
 
 _walls_cache = None
 _walls_cache_time = 0
-_CACHE_TTL = 0.05  # 50ms 内复用
+_CACHE_TTL = 0.05
 
 def _read_walls(walls=None):
     """读一次 LiDAR，拟合墙壁，50ms 内重复调用走缓存。"""
@@ -115,7 +115,7 @@ class CarService:
         time.sleep(1)
         start_time = time.time()
         while True:
-            if time.time() - start_time > 10:  # 超时保护放在 try 外，recv 失败也能触发
+            if time.time() - start_time > 10:
                 break
             self.channel.send("chassis speed ?;".encode('utf-8'))
             try:
@@ -160,7 +160,6 @@ class CarService:
         y_ok = (ri is not None and l is not None and abs(ri + l - _ROOM_H) < tol)
         return x_ok and y_ok
 
-
 if __name__ == "__main__":
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -171,7 +170,6 @@ if __name__ == "__main__":
     target_pub = rospy.Publisher("/target", Pose2D, queue_size=5)
     CurrentTaskID = 0
 
-    # ========== 原有端点 ==========
     @app.route('/Circle', methods=['POST'])
     def circle():
         try:
@@ -463,7 +461,6 @@ if __name__ == "__main__":
             }
             return jsonify(error_response), 500
 
-    # ========== 新增端点：姿态纠正与基准设定 ==========
     @app.route('/SyncYaw', methods=['POST'])
     def sync_yaw():
         """基于雷达前后距离和纠正车头方向"""
