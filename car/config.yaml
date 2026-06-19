@@ -79,6 +79,8 @@ path_planning:
   expansion_radius_2: 0.5
   # 膨胀半径3：硬过滤阈值(m)。任一段 < 此值 → 丢弃该候选路径
   expansion_radius_3: 0.5
+  # 急停阈值(m)：行车中离障碍物 < 此值 → 急停 + 探路 + 重规划
+  emergency_stop_dist: 0.4
 
 # LiDAR 工具
 lidar:

@@ -178,8 +178,9 @@ def _point_to_segment_dist(px, py, ax, ay, bx, by):
 
 
 def _move_segment_monitored(x1, y1, x2, y2, cli,
-                             drift_threshold=DRIFT_THRESHOLD):
-    """整段移动 + 后台实时监控。偏移偏大时立即打断校正，然后继续剩余距离。"""
+                             drift_threshold=DRIFT_THRESHOLD,
+                             safety_monitor=None):
+    """整段移动 + 后台实时监控。偏移偏大/离障碍物太近时立即打断校正。"""
     seg_start_x, seg_start_y = x1, y1
     yaw_threshold = cfg.server.sync_yaw_threshold_deg
 
@@ -201,6 +202,7 @@ def _move_segment_monitored(x1, y1, x2, y2, cli,
         t.start()
 
         # 主线程：边走边读 LiDAR
+        last_valid_x, last_valid_y = None, None
         while t.is_alive():
             time.sleep(0.15)
             cx, cy = car_position()
@@ -208,6 +210,15 @@ def _move_segment_monitored(x1, y1, x2, y2, cli,
 
             if cx is None or cy is None:
                 continue
+            if not _lidar_readings_sane():
+                continue
+
+            # 帧间跳变检查：0.15s 内位置不可能跳 > 0.5m
+            if last_valid_x is not None and last_valid_y is not None:
+                jump = math.hypot(cx - last_valid_x, cy - last_valid_y)
+                if jump > 0.5:
+                    continue  # 垃圾帧，跳过
+            last_valid_x, last_valid_y = cx, cy
 
             drift = _point_to_segment_dist(cx, cy, seg_start_x, seg_start_y, x2, y2)
 
@@ -221,7 +232,17 @@ def _move_segment_monitored(x1, y1, x2, y2, cli,
                 status = "正常"
 
             yaw_str = f"{yaw:.1f}°" if yaw is not None else "-"
-            print(f"  X={cx:.3f} Y={cy:.3f}  偏角={yaw_str}  偏离={drift:.3f}m  {status}")
+            obs_str = safety_monitor.dist_summary(cx, cy) if safety_monitor else ""
+            print(f"  X={cx:.3f} Y={cy:.3f}  偏角={yaw_str}  偏离={drift:.3f}m{obs_str}  {status}")
+
+            # 离障碍物太近 → 急停
+            if safety_monitor:
+                should_stop, stop_reason = safety_monitor.check(cx, cy)
+                if should_stop:
+                    print(f"  ⚠ {stop_reason}")
+                    result["drifted"] = True
+                    t.join(timeout=5)
+                    break
 
             if drift > HARD_DRIFT:
                 result["drifted"] = True
@@ -451,10 +472,10 @@ def _execute_point(num, targets, zones, start_pos, cli, obstacles=None):
     if not (abs(cx - tx) < 0.05 and abs(cy - ty) < 0.05):
         print(f"\n  [规划] {label} 路径规划中...")
 
-        # 先离开危险区，再规划
-        from utils.emergency_escape import escape_danger_zone
-        cx, cy = escape_danger_zone(cx, cy, obstacles, zones, cli,
-                                     car_position_fn=car_position)
+        # 安全监控 + 先离开危险区，再规划
+        from entities.safety_monitor import SafetyMonitor
+        safety = SafetyMonitor(cli, car_position, obstacles, zones)
+        cx, cy = safety.ensure_safe(cx, cy)
 
         result = plan_path(cx, cy, tx, ty, cx, cy, forbidden_zones=zones,
                            obstacles=obstacles)
@@ -480,7 +501,8 @@ def _execute_point(num, targets, zones, start_pos, cli, obstacles=None):
             else:
                 print(f"  #{seg_idx}→#{seg_idx+1}  Y  {y1:.3f} → {y2:.3f}  ({dist:.2f}m)")
 
-            ok, resp, need_replan = _move_segment_monitored(x1, y1, x2, y2, cli)
+            ok, resp, need_replan = _move_segment_monitored(x1, y1, x2, y2, cli,
+                                                              safety_monitor=safety)
 
             if need_replan:
                 replan_count += 1
@@ -490,6 +512,8 @@ def _execute_point(num, targets, zones, start_pos, cli, obstacles=None):
                 if cx is None or cy is None:
                     print("  ⚠ 无法定位，放弃")
                     return False
+
+                cx, cy = safety.ensure_safe(cx, cy)
 
                 result = plan_path(cx, cy, tx, ty, cx, cy,
                                    forbidden_zones=zones, obstacles=obstacles)
