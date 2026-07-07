@@ -12,8 +12,8 @@ def main() -> None:
     parser.add_argument('--image', type=str, default=None, help='单张图片检测（不飞行）')
     parser.add_argument('--stream', action='store_true', help='实时拉流测试（H + 等级检测画面，不飞行）')
     parser.add_argument('--waypoint', type=str, default=None, help='飞往指定救援点并对齐 H（例: "救援点1"）')
-    parser.add_argument('--mission', type=str, default='scan', choices=['scan', 'delivery'],
-                        help='任务模式：scan=仅巡检，delivery=巡检+等待小车信号+送达目标+返回原点')
+    parser.add_argument('--mission', type=str, default='scan', choices=['scan', 'delivery', 'drone_full'],
+                        help='任务模式：scan=仅巡检，delivery=完整任务，drone_full=无人机全流程测试(无小车)')
     args = parser.parse_args()
 
     config = JsonHelper.load_json(args.config)
@@ -41,7 +41,9 @@ def main() -> None:
     controller = RescueController(config)
     controller.set_car_controller(CarController(config))
 
-    if args.mission == 'delivery':
+    if args.mission == 'drone_full':
+        controller.execute_drone_full_test()
+    elif args.mission == 'delivery':
         controller.execute_delivery_mission()
     else:
         controller.execute_scan_mission()

@@ -3,15 +3,16 @@
   "listen": true,
   "show_camera": false,
   "landing_offset": 0.04,
+  "landing_preview_height": 0.8,
   "target_grade": "1",
   "target_waypoint_name": "",
   "target_labels": ["trapped_people", "fire_trapped_people", "ruin_trapped_people", "drop_water"],
   "loading_area": {
     "x": -0.4,
-    "y": -1.05,
+    "y": -1.0,
     "z": 1.2,
     "gimbal_pitch": -90,
-    "rotate_to": 0
+    "rotate_to": 5
   },
   "camera_ffmpeg_opts": {
     "rtsp_transport": "tcp"
@@ -99,8 +100,8 @@
     },
     {
       "name": "救援点3",
-      "x": 2.1,
-      "y": -4.1,
+      "x": 1.9,
+      "y": -3.8,
       "z": 1.2,
       "rotation": 90,
       "gimbal_pitch": -90,
@@ -109,11 +110,11 @@
     {
       "name": "救援点4",
       "x": -0.5,
-      "y": -4.25,
+      "y": -4.0,
       "z": 1.2,
       "rotation": 270,
       "gimbal_pitch": -90,
-      "rotate_to": 9
+      "rotate_to": 10
     }
   ],
   "rescue_points": [

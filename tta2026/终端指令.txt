@@ -5,6 +5,8 @@ pkill PlaneServer && /home/forlinx/PSDK/build/bin/PlaneServer
 
 python Main.py --config configs/rescue_config.json
 
+192.168.31.131
+
 mac:
 改变CameraSource里，把ffmpeg.exe改成ffmpeg
 cd /home/forlinx/PSDK/build/bin/

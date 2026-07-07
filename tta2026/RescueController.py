@@ -58,6 +58,108 @@ class RescueController:
         print(f"[RescueController] 巡检{'全部完成' if all_ok else '部分完成'} — {self.rescue_points.summary()}")
         return all_ok
 
+    def _servo_h_loop(self, rotation: float = 0.0, max_search: int = 3, max_servo: int = 5):
+        """内部辅助：云台朝下搜索 H 并迭代伺服居中。
+        rotation: 不为0时传给 _servo_toward_h 修正坐标系方向。"""
+        for _ in range(max_search):
+            frame = self.drone._capture_fresh_frame(settle=3.0)
+            if frame is None: continue
+            det = self.drone.detect_all(frame)
+            if det['h_candidate']:
+                for __ in range(max_servo):
+                    moved = self.drone._servo_toward_h(det['h_candidate']['box'], frame.shape, rotation=rotation)
+                    if not moved: break
+                    time.sleep(2)
+                    frame = self.drone._capture_fresh_frame(settle=2.0, read_time=2.0)
+                    if frame is None: break
+                    det = self.drone.detect_all(frame)
+                    if det['h_candidate'] is None: break
+                return True
+        return False
+
+    def _servo_and_land(self, rotation: float = 0.0):
+        """标准降落：伺服 H → 前移 landing_offset → 降落 → 等 20 秒稳定。
+        返回降落时的 state（用于后续起飞校准坐标）。"""
+        self.drone._rotate_gimbal_with_recovery(-90)
+        self._servo_h_loop(rotation=rotation)
+        offset = float(self.config.get('landing_offset', 0.04))
+        print(f"[RescueController] 前移 {offset:.2f}m 后降落")
+        self.drone.move_to(self.drone.drone.state['x'] + offset, self.drone.drone.state['y'], self.drone.drone.state['z'])
+        time.sleep(1)
+        self.drone._rotate_gimbal_with_recovery(0)
+        # 保存降落坐标（servo 后 state 已更新到接近真实位置）
+        saved = dict(self.drone.drone.state)
+        self.drone.land()
+        time.sleep(20)
+        return saved
+
+    def execute_drone_full_test(self) -> bool:
+        """无人机全流程测试（无小车）：
+        巡检4点 → 装货区降落(180°) → 起飞回原点 → 飞目标点 →
+        伺服 → 旋转(rotation) → 再伺服 → 预降至(landing_preview_height) → 伺服 → 降落 →
+        起飞 → 旋转(-rotation) → 回原点 → 伺服 → 降落。"""
+        import time
+        print("[RescueController] ====== 无人机全流程测试 ======")
+
+        results = self.drone.scan_waypoints()
+        self._update_rescue_results(results)
+        self._write_csv()
+        time.sleep(20)  # 装货区降落后等稳定
+
+        target_name = self._select_target_waypoint(results) or next(iter(results.keys()), None)
+        if target_name is None:
+            return False
+        target_waypoint = self._find_waypoint(target_name)
+        rot = target_waypoint.rotation  # 救援点的 rotation 角度
+        return_altitude = float(self.config.get('return_altitude', 1.2))
+        preview_h = float(self.config.get('landing_preview_height', 0.8))
+        print(f"[RescueController] 目标: {target_name}, rotation={rot}°")
+
+        # ---- 起飞回原点 ----
+        print("[RescueController] --- 起飞回原点 ---")
+        self.drone.reset(); time.sleep(1)
+        self.drone.takeoff()
+        self.drone.rotate_yaw(180)
+        self.drone.move_to(0.0, 0.0, return_altitude)
+
+        # ---- 飞目标点 → 伺服 → 旋转 → 再伺服 → 预降 → 伺服 → 降落 ----
+        print(f"[RescueController] --- 飞目标点 {target_name} ---")
+        self.drone.move_to(target_waypoint.x, target_waypoint.y, target_waypoint.z)
+        self.drone._rotate_gimbal_with_recovery(-90)
+        self._servo_h_loop(rotation=rot)  # 首次伺服传 rotation 修正方向
+
+        # 物理旋转 rotation 角度
+        if abs(rot) > 0.1:
+            print(f"[RescueController] 旋转 {rot}°")
+            self.drone.rotate_yaw(rot)
+            time.sleep(2)
+            self._servo_h_loop()  # 旋转后伺服，不传 rotation
+
+        # 预降后伺服
+        print(f"[RescueController] 预降至 {preview_h:.1f}m")
+        self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], preview_h)
+        time.sleep(2)
+        landing_state = self._servo_and_land()
+        time.sleep(2)
+
+        # ---- 起飞 → 旋转 -rotation → 回原点 → 伺服 → 降落 ----
+        print("[RescueController] --- 起飞回原点 ---")
+        self.drone.reset(); time.sleep(1)
+        self.drone.takeoff()
+        # 用降落时的坐标校准 state，消除伺服累积误差
+        self.drone.drone.state['x'] = landing_state['x']
+        self.drone.drone.state['y'] = landing_state['y']
+        if abs(rot) > 0.1:
+            print(f"[RescueController] 旋转 -{rot}° 恢复朝向")
+            self.drone.rotate_yaw(-rot)
+        self.drone.move_to(0.0, 0.0, return_altitude)
+
+        print("[RescueController] --- 原点H对齐降落 ---")
+        self._servo_and_land()
+
+        print("[RescueController] ====== 全流程测试完成 ======")
+        return True
+
     def execute_delivery_mission(self) -> bool:
         """完整任务流程：
         无人机巡检 → 装货 → 投送 → 物资放置 → 返航。
@@ -69,6 +171,8 @@ class RescueController:
         results = self.drone.scan_waypoints()
         self._update_rescue_results(results)
         self._write_csv()
+        saved_loading = dict(self.drone.drone.state)  # 保存装货区降落前坐标
+        time.sleep(20)  # 装货区降落后等稳定
         # scan_waypoints 末尾已在装货区旋转 180° 并降落
 
         target_name = self._select_target_waypoint(results)
@@ -100,8 +204,13 @@ class RescueController:
         # ==================== 阶段 3：无人机出征 ====================
         print("[RescueController] --- 阶段 3: 无人机携带物资出征 ---")
 
+        self.drone.reset()
+        time.sleep(1)
         if not self.drone.takeoff():
             return False
+        # 用降落坐标校准
+        self.drone.drone.state['x'] = saved_loading['x']
+        self.drone.drone.state['y'] = saved_loading['y']
 
         # 撤销装货区着陆时的 180° 旋转，恢复起始朝向
         print("[RescueController] 旋转 180° 恢复起始朝向")
@@ -117,24 +226,27 @@ class RescueController:
         target_waypoint = self._find_waypoint(target_name)
         if target_waypoint is None:
             return False
-        print(f"[RescueController] 飞往目标: {target_waypoint.name} ({target_waypoint.x}, {target_waypoint.y}, {target_waypoint.z})")
+        rot = target_waypoint.rotation
+        preview_h = float(self.config.get('landing_preview_height', 0.8))
+        print(f"[RescueController] 飞往目标: {target_waypoint.name} ({target_waypoint.x}, {target_waypoint.y}, {target_waypoint.z}) rotation={rot}°")
         if not self.drone.move_to(target_waypoint.x, target_waypoint.y, target_waypoint.z):
             return False
 
-        # 目标点 H 对齐后降落
-        print("[RescueController] 目标点 H 对齐并降落")
+        # 目标点: 伺服 → 旋转 → 再伺服 → 预降 → 伺服 → 降落
+        print("[RescueController] 目标点 H 对齐...")
         self.drone._rotate_gimbal_with_recovery(-90)
-        for attempt in range(3):
-            frame = self.drone._capture_fresh_frame(settle=3.0)
-            if frame is None:
-                continue
-            all_det = self.drone.detect_all(frame)
-            if all_det['h_candidate'] is not None:
-                self.drone._servo_toward_h(all_det['h_candidate']['box'], frame.shape)
-                break
-        self.drone._rotate_gimbal_with_recovery(0)
-        if not self.drone.land():
-            return False
+        self._servo_h_loop(rotation=rot)
+
+        if abs(rot) > 0.1:
+            print(f"[RescueController] 旋转 {rot}°")
+            self.drone.rotate_yaw(rot)
+            time.sleep(2)
+            self._servo_h_loop()
+
+        print(f"[RescueController] 预降至 {preview_h:.1f}m")
+        self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], preview_h)
+        time.sleep(2)
+        landing_state = self._servo_and_land()
 
         # ==================== 阶段 4：地面物资放置 ====================
         print("[RescueController] --- 阶段 4: 小车放置物资 ---")
@@ -156,12 +268,21 @@ class RescueController:
 
         # ==================== 阶段 5：返航 ====================
         print("[RescueController] --- 阶段 5: 无人机返航 ---")
+        self.drone.reset()
+        time.sleep(1)
         if not self.drone.takeoff():
             return False
+        # 用目标点降落坐标校准
+        self.drone.drone.state['x'] = landing_state['x']
+        self.drone.drone.state['y'] = landing_state['y']
+        if abs(rot) > 0.1:
+            print(f"[RescueController] 旋转 -{rot}° 恢复朝向")
+            self.drone.rotate_yaw(-rot)
         if not self.drone.move_to(0.0, 0.0, return_altitude):
             return False
-        if not self.drone.land():
-            return False
+
+        print("[RescueController] 原点 H 对齐...")
+        self._servo_and_land()
 
         print("[RescueController] ====== 完整任务完成 ======")
         return True
