@@ -3,6 +3,7 @@
   "listen": true,
   "show_camera": false,
   "landing_offset": 0.04,
+  "home_point": { "x": 0.7, "y": 0.3, "z": 1.2 },
   "landing_preview_height": 0.8,
   "target_grade": "1",
   "target_waypoint_name": "",

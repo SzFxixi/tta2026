@@ -396,6 +396,29 @@ class DroneNavigator:
             self._preview(annotated)
 
             if h_candidate is not None:
+                if self._stream_broken:
+                    print(f"[DroneNavigator] {waypoint.name} 断流后首帧有H，冲洗重取确认...")
+                    self._stream_broken = False
+                    t0 = time.time()
+                    while time.time() - t0 < 3.0:
+                        self.camera.read()
+                    time.sleep(1)
+                    confirm = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                    if confirm is not None:
+                        if waypoint.rotation:
+                            confirm = self._rotate_frame(confirm, waypoint.rotation)
+                        recheck = self.detect_all(confirm)
+                        if recheck['h_candidate'] is not None:
+                            h_candidate = recheck['h_candidate']
+                            grade_info = recheck['grade_info']
+                            image_path, _ = self.annotate_and_save(confirm, {'objects': recheck['grade_objects'] + recheck['h_objects']}, f'scan_{waypoint.name}_{current_z:.1f}_confirmed')
+                            print(f"[DroneNavigator] {waypoint.name} 确认帧仍有H，通过")
+                        else:
+                            print(f"[DroneNavigator] {waypoint.name} 确认帧无H，丢弃继续搜索")
+                            continue
+                    else:
+                        print(f"[DroneNavigator] {waypoint.name} 确认帧采集失败，丢弃继续搜索")
+                        continue
                 h_found = True
                 break
 
@@ -410,23 +433,8 @@ class DroneNavigator:
         for servo_iter in range(5):
             moved = self._servo_toward_h(h_candidate['box'], frame.shape, rotation=waypoint.rotation)
             if not moved:
-                if self._stream_broken:
-                    print(f"[DroneNavigator] {waypoint.name} 流曾中断, 二次确认...")
-                    time.sleep(1)
-                    confirm = self._capture_fresh_frame(settle=2.0, read_time=2.0)
-                    if confirm is not None:
-                        if waypoint.rotation:
-                            confirm = self._rotate_frame(confirm, waypoint.rotation)
-                        confirm_h = self.detect_all(confirm)['h_candidate']
-                        if confirm_h is not None:
-                            moved2 = self._servo_toward_h(confirm_h['box'], confirm.shape, rotation=waypoint.rotation)
-                            if not moved2:
-                                print(f"[DroneNavigator] {waypoint.name} H 确认已居中")
-                                break
-                    print(f"[DroneNavigator] {waypoint.name} 二次确认失败, 继续伺服")
-                else:
-                    print(f"[DroneNavigator] {waypoint.name} H 已居中 (迭代{servo_iter+1}次)")
-                    break
+                print(f"[DroneNavigator] {waypoint.name} H 已居中 (迭代{servo_iter+1}次)")
+                break
             time.sleep(2)
             frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
             if waypoint.rotation:
@@ -659,6 +667,22 @@ class DroneNavigator:
                 continue
             all_detections = self.detect_all(frame)
             h_candidate = all_detections['h_candidate']
+            if h_candidate is not None and self._stream_broken:
+                print("[DroneNavigator] 装货区 断流后首帧有H，冲洗确认...")
+                self._stream_broken = False
+                t0 = time.time()
+                while time.time() - t0 < 3.0:
+                    self.camera.read()
+                time.sleep(1)
+                confirm = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                if confirm is not None:
+                    confirm_det = self.detect_all(confirm)
+                    if confirm_det['h_candidate'] is not None:
+                        h_candidate = confirm_det['h_candidate']
+                    else:
+                        continue
+                else:
+                    continue
             if h_candidate is None:
                 if attempt > 0:
                     ox, oy = self._next_spiral_offset(attempt)
@@ -683,7 +707,7 @@ class DroneNavigator:
 
         # ── 3. 旋转 180° ──
         print("[DroneNavigator] 装货区: 旋转 180°...")
-        self.drone.rotate_yaw(183)
+        self.drone.rotate_yaw(184)
         time.sleep(2)
 
         # ── 4. 第二轮 H 检测并伺服 ──
@@ -694,6 +718,18 @@ class DroneNavigator:
                 continue
             all_detections = self.detect_all(frame)
             h_candidate = all_detections['h_candidate']
+            if h_candidate is not None and self._stream_broken:
+                self._stream_broken = False
+                t0 = time.time()
+                while time.time() - t0 < 3.0:
+                    self.camera.read()
+                time.sleep(1)
+                confirm = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                if confirm is not None:
+                    confirm_det = self.detect_all(confirm)
+                    h_candidate = confirm_det['h_candidate'] if confirm_det['h_candidate'] is not None else None
+                else:
+                    h_candidate = None
             if h_candidate is None:
                 if attempt > 0:
                     ox, oy = self._next_spiral_offset(attempt)
@@ -722,6 +758,16 @@ class DroneNavigator:
             if preview_frame is None:
                 continue
             preview_det = self.detect_all(preview_frame)
+            if preview_det['h_candidate'] is not None and self._stream_broken:
+                self._stream_broken = False
+                t0 = time.time()
+                while time.time() - t0 < 3.0:
+                    self.camera.read()
+                time.sleep(1)
+                confirm = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                if confirm is not None:
+                    confirm_det = self.detect_all(confirm)
+                    preview_det = confirm_det if confirm_det['h_candidate'] is not None else preview_det
             if preview_det['h_candidate'] is not None:
                 for _ in range(5):
                     moved = self._servo_toward_h(preview_det['h_candidate']['box'], preview_frame.shape)
