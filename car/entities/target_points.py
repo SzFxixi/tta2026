@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import json
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import os
 import numpy as np
 import rospy
@@ -9,11 +11,7 @@ _CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "target_points.json")
 NUM_TARGETS = 6
 
-
-# ============================================================
 #  LiDAR 光束读取
-# ============================================================
-
 def _get_beam(index):
     """读取指定索引的光束距离，滤除 inf"""
     data = rospy.wait_for_message("scan", LaserScan)
@@ -25,21 +23,18 @@ def _get_beam(index):
         d = data.ranges[index % n]
     return d
 
-
 def _get_n():
     data = rospy.wait_for_message("scan", LaserScan)
     return len(data.ranges)
-
 
 # ── 规划坐标：统一前X + 右Y ──
 
 def _read_plan():
     """规划坐标 — 始终用前光束和右侧光束"""
     n = _get_n()
-    x = _get_beam(n // 2)       # 前
-    y = _get_beam(n // 4)       # 右
+    x = _get_beam(n // 2)
+    y = _get_beam(n // 4)
     return round(x, 3), round(y, 3)
-
 
 # ── 校正坐标：按点位读取原始光束距离 ──
 
@@ -51,7 +46,6 @@ _CORRECT_BEAMS = {
     4: ("n//2",   "n*3//4",   "前 + 左"),
 }
 
-
 def _read_correct(point_id):
     """校正坐标 — 按点位读取原始光束距离，不做减法"""
     n = _get_n()
@@ -62,34 +56,24 @@ def _read_correct(point_id):
     y = _get_beam(y_idx)
     return round(x, 3), round(y, 3)
 
-
-# ============================================================
 #  文件读写
-# ============================================================
-
 def _read_config():
     if not os.path.exists(_CONFIG_FILE):
         return None
     with open(_CONFIG_FILE, 'r') as f:
         return json.load(f)
 
-
 def _write_config(config):
     with open(_CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
 
-
-# ============================================================
 #  查询
-# ============================================================
-
 def load_targets():
     """读取目标点配置。返回 point dicts 列表，无文件时返回 None。"""
     config = _read_config()
     if config is None:
         return None
     return config.get("points", [])
-
 
 def list_targets():
     """打印已保存的目标点坐标。"""
@@ -106,11 +90,7 @@ def list_targets():
             print(f"  目标点 {i}: 规划({px:.3f},{py:.3f})  校正(-)")
     return len(config["points"])
 
-
-# ============================================================
 #  交互式设置
-# ============================================================
-
 def setup_targets():
     """交互式设置 {NUM_TARGETS} 个目标点坐标（覆盖已有配置）。"""
     points = []
@@ -142,11 +122,7 @@ def setup_targets():
     print(f"{NUM_TARGETS} 个目标点已保存到 {_CONFIG_FILE}\n")
     return points
 
-
-# ============================================================
 #  命令行入口
-# ============================================================
-
 if __name__ == "__main__":
     rospy.init_node("target_points_tool", anonymous=True)
     rospy.wait_for_message("scan", LaserScan, timeout=5.0)

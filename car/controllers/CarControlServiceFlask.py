@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # coding=utf-8
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import Flask, request, jsonify
 import socket
 import time
@@ -13,51 +15,54 @@ import os
 import math
 
 from utils.config_loader import cfg
+from utils.wall_positioning import fit_walls
+
+# 房间尺寸
+_ROOM_W = cfg.room.x_max - cfg.room.x_min
+_ROOM_H = cfg.room.y_max - cfg.room.y_min
+
+_walls_cache = None
+_walls_cache_time = 0
+_CACHE_TTL = 0.05
+
+def _read_walls(walls=None):
+    """读一次 LiDAR，拟合墙壁，50ms 内重复调用走缓存。"""
+    global _walls_cache, _walls_cache_time
+    now = time.time()
+    if _walls_cache is not None and (now - _walls_cache_time) < _CACHE_TTL:
+        return _walls_cache
+    data = rospy.wait_for_message("scan", LaserScan)
+    _walls_cache = fit_walls(data, walls=walls)
+    _walls_cache_time = now
+    return _walls_cache
 
 def getx():
-    data = rospy.wait_for_message("scan", LaserScan)
-    number = len(data.ranges)
-    middle = number // 2
-    lidarx = data.ranges[middle]
-    while lidarx == np.inf:
-        data = rospy.wait_for_message("scan", LaserScan)
-        number = len(data.ranges)
-        middle = number // 2
-        lidarx = data.ranges[middle]
-    return lidarx
+    """前墙垂直距离 (m)。"""
+    return _read_walls(walls=["前"]).get("前墙")
 
 def gety():
-    data = rospy.wait_for_message("scan", LaserScan)
-    number = len(data.ranges)
-    qur = number // 4
-    lidary = data.ranges[qur]
-    while lidary == np.inf:
-        data = rospy.wait_for_message("scan", LaserScan)
-        number = len(data.ranges)
-        qur = number // 4
-        lidary = data.ranges[qur]
-    return lidary
+    """右墙垂直距离 (m)。"""
+    return _read_walls(walls=["右"]).get("右墙")
+
+def get_x():
+    """后墙垂直距离 (m)。"""
+    return _read_walls(walls=["后"]).get("后墙")
+
+def get_y():
+    """左墙垂直距离 (m)。"""
+    return _read_walls(walls=["左"]).get("左墙")
 
 def getsum():
-    lidar_x_average = 0
-    lidar_x__average = 0
-    for i in range(5):
-        data = rospy.wait_for_message("scan", LaserScan)
-        number = len(data.ranges)
-        middle = number // 2
-        lidarx = data.ranges[middle]
-        lidarx_ = data.ranges[number-2]
-        while lidarx_ == np.inf or lidarx== np.inf:
-            data = rospy.wait_for_message("scan", LaserScan)
-            number = len(data.ranges)
-            middle = number // 2
-            lidarx = data.ranges[middle]
-            lidarx_ = data.ranges[number-2]
-        lidar_x_average +=  lidarx
-        lidar_x__average += lidarx_
-    lidar_x_average /= 5
-    lidar_x__average /= 5
-    return lidar_x__average + lidar_x_average
+    """前后墙距离之和 (m)。"""
+    w = _read_walls(walls=["前", "后"])
+    f, r = w.get("前墙"), w.get("后墙")
+    return (f + r) if (f is not None and r is not None) else None
+
+def getsum_y():
+    """左右墙距离之和 (m)。"""
+    w = _read_walls(walls=["右", "左"])
+    r, l = w.get("右墙"), w.get("左墙")
+    return (r + l) if (r is not None and l is not None) else None
 
 def signal_handler(sig, frame):
     print('收到终止信号，正在关闭资源...')
@@ -91,8 +96,6 @@ class CarService:
         self.channel.settimeout(3)
         rospy.init_node("lidar_data")
         rospy.wait_for_message("scan", LaserScan)
-        self.distance = getsum()
-        self.initialYaw = self.getYaw()
         print("CarService ready")
 
     def Shutdown(self):
@@ -112,7 +115,7 @@ class CarService:
         time.sleep(1)
         start_time = time.time()
         while True:
-            if time.time() - start_time > 10:  # 超时保护放在 try 外，recv 失败也能触发
+            if time.time() - start_time > 10:
                 break
             self.channel.send("chassis speed ?;".encode('utf-8'))
             try:
@@ -123,48 +126,59 @@ class CarService:
             except Exception:
                 pass
 
-    def getYaw(self):
-        self.channel.send("chassis position ?;".encode("utf-8"))
-        result = self.channel.recv(1024).decode('utf-8').split(' ')
-        _,_,yaw = map(float,result[:3])
-        return yaw
-
-    def set_baseline(self):
-        """保存当前前后距离和以及偏航角，作为后续纠偏的基准"""
-        self.distance = getsum()
-        self.initialYaw = self.getYaw()
-
     def SyncYaw(self):
-        for iteration in range(10):
-            self.channel.send("chassis position ?;".encode("utf-8"))
-            result = self.channel.recv(1024).decode('utf-8').split(' ')
-            try:
-                _,_,yaw = map(float,result[:3])
-                theat = self.return_theat()
-                if yaw > 90:
-                    yaw = yaw - 180
-                if theat > cfg.server.sync_yaw_threshold_deg:
-                    if yaw - self.initialYaw > 0:
-                        theat = theat * (-1)
-                    step = max(2.5, min(abs(theat), 10.0)) * (theat / abs(theat))
-                    self.channel.send(f"chassis move z {step};".encode('utf-8'))
-                    time.sleep(0.5)
-                    try:
-                        self.channel.recv(1024)
-                    except Exception:
-                        pass
-                else:
+        """基于墙壁法向量的偏航角校正。带 sanity check 防止垃圾读数。"""
+        prev_yaw = None
+        for iteration in range(cfg.server.sync_yaw_max_iterations):
+            w = _read_walls()
+            yaw = w.get("yaw")
+            fx, ry = w.get("前墙"), w.get("右墙")
+            if yaw is None:
+                print(f"  [SyncYaw] yaw=None，放弃")
+                break
+            # sanity check: 墙壁拟合必须合理
+            if not self.readings_sane():
+                print(f"  [SyncYaw] readings_sane 不通过，放弃")
+                break
+            # sanity check: 位置超房间边界 → 墙体拟合垃圾
+            if fx is not None and ry is not None:
+                rw = cfg.room.x_max - cfg.room.x_min
+                rh = cfg.room.y_max - cfg.room.y_min
+                if fx < -0.5 or fx > rw + 0.5 or ry < -0.5 or ry > rh + 0.5:
+                    print(f"  [SyncYaw] 位置异常 X={fx:.2f} Y={ry:.2f}，放弃")
                     break
+            # sanity check: 连续两帧偏角跳变 > 30°
+            if prev_yaw is not None and abs(yaw - prev_yaw) > 30:
+                print(f"  [SyncYaw] yaw 跳变 {prev_yaw:.1f}°→{yaw:.1f}°，放弃")
+                break
+            prev_yaw = yaw
+            if abs(yaw) < cfg.server.sync_yaw_threshold_deg:
+                print(f"  [SyncYaw] yaw={yaw:.1f}° < {cfg.server.sync_yaw_threshold_deg}°，完成")
+                break
+            step = max(cfg.server.sync_yaw_step_min_deg,
+                       min(abs(yaw), cfg.server.sync_yaw_step_max_deg))
+            step = step * (-1 if yaw > 0 else 1)
+            print(f"  [SyncYaw] #{iteration+1} yaw={yaw:.1f}° → 转 {step:+.0f}°  (X={fx:.2f} Y={ry:.2f})")
+            self.channel.send(f"chassis move z {step};".encode('utf-8'))
+            try:
+                self.channel.recv(1024)
             except Exception:
                 pass
+            time.sleep(0.5)
 
     def return_theat(self):
-        s = getsum()
-        t = self.distance / s
-        if t > 1:
-            t = 1
-        return np.arccos(t) * 180 / 3.1415926
+        """返回当前偏航角（度），基于墙壁法向量。"""
+        return _read_walls().get("yaw")
 
+    def readings_sane(self):
+        """检查墙壁拟合是否合理：前+后≈房间宽，右+左≈房间高。"""
+        w = _read_walls()
+        f, r = w.get("前墙"), w.get("后墙")
+        ri, l = w.get("右墙"), w.get("左墙")
+        tol = cfg.client.sanity_check_tolerance
+        x_ok = (f is not None and r is not None and abs(f + r - _ROOM_W) < tol)
+        y_ok = (ri is not None and l is not None and abs(ri + l - _ROOM_H) < tol)
+        return x_ok and y_ok
 
 if __name__ == "__main__":
 
@@ -176,7 +190,6 @@ if __name__ == "__main__":
     target_pub = rospy.Publisher("/target", Pose2D, queue_size=5)
     CurrentTaskID = 0
 
-    # ========== 原有端点 ==========
     @app.route('/Circle', methods=['POST'])
     def circle():
         try:
@@ -323,15 +336,30 @@ if __name__ == "__main__":
                 return jsonify(error_response), 400
 
             target_pub.publish(Pose2D(x=float(location[0]), y=float(location[1]), theta=0))
-            move_x = (getx() - car.x_offset) - float(location[0])
-            cmd = f"chassis move x {move_x} y 0 z 0;"
-            car.Move(cmd)
-            attempts = 0
-            while(abs(float(location[1]) - (gety() - car.y_offset)) > 0.08 and attempts < 5):
-                move_y = ((gety() - car.y_offset) - float(location[1]))
-                cmd = f"chassis move x 0 y {move_y} z 0;"
+
+            gx = getx()
+            if gx is None:
+                print("[MoveOnlyY] LiDAR X 无回波，仅发开环指令")
+                cmd = f"chassis move x 0 y 0 z 0;"
                 car.Move(cmd)
-                attempts += 1
+            else:
+                move_x = (gx - car.x_offset) - float(location[0])
+                cmd = f"chassis move x {move_x} y 0 z 0;"
+                car.Move(cmd)
+
+            do_correct = data.get('correct', True)
+            if do_correct and car.readings_sane():
+                attempts = 0
+                while(abs(float(location[1]) - (gety() - car.y_offset)) > 0.08 and attempts < 5):
+                    gy = gety()
+                    if gy is None:
+                        break
+                    move_y = (gy - car.y_offset) - float(location[1])
+                    cmd = f"chassis move x 0 y {move_y} z 0;"
+                    car.Move(cmd)
+                    attempts += 1
+            elif do_correct and not car.readings_sane():
+                print("[MoveOnlyY] LiDAR 读数异常，跳过闭环校正")
             CurrentTaskID += 1
             success_response = {
                 "isSuccess": True,
@@ -365,15 +393,30 @@ if __name__ == "__main__":
                 return jsonify(error_response), 400
 
             target_pub.publish(Pose2D(x=float(location[0]), y=float(location[1]), theta=0))
-            move_x = ((getx() - car.x_offset) - float(location[0]))
-            cmd = f"chassis move x {move_x} y 0 z 0;"
-            car.Move(cmd)
-            attempts = 0
-            while(abs(float(location[0]) - (getx() - car.x_offset)) > 0.08 and attempts < 5):
-                move_x = (getx() - car.x_offset) - float(location[0])
+
+            gx = getx()
+            if gx is None:
+                print("[MoveOnlyX] LiDAR X 无回波，仅发开环指令")
+                cmd = f"chassis move x 0 y 0 z 0;"
+                car.Move(cmd)
+            else:
+                move_x = (gx - car.x_offset) - float(location[0])
                 cmd = f"chassis move x {move_x} y 0 z 0;"
                 car.Move(cmd)
-                attempts += 1
+
+            do_correct = data.get('correct', True)
+            if do_correct and car.readings_sane():
+                attempts = 0
+                while(abs(float(location[0]) - (getx() - car.x_offset)) > 0.08 and attempts < 5):
+                    gx2 = getx()
+                    if gx2 is None:
+                        break
+                    move_x = (gx2 - car.x_offset) - float(location[0])
+                    cmd = f"chassis move x {move_x} y 0 z 0;"
+                    car.Move(cmd)
+                    attempts += 1
+            elif do_correct and not car.readings_sane():
+                print("[MoveOnlyX] LiDAR 读数异常，跳过闭环校正")
             CurrentTaskID += 1
             success_response = {
                 "isSuccess": True,
@@ -438,7 +481,6 @@ if __name__ == "__main__":
             }
             return jsonify(error_response), 500
 
-    # ========== 新增端点：姿态纠正与基准设定 ==========
     @app.route('/SyncYaw', methods=['POST'])
     def sync_yaw():
         """基于雷达前后距离和纠正车头方向"""
@@ -457,29 +499,6 @@ if __name__ == "__main__":
                 return jsonify(error_response), 400
 
             car.SyncYaw()
-            CurrentTaskID += 1
-            return jsonify({"isSuccess": True, "currentTaskId": CurrentTaskID})
-        except Exception as e:
-            return jsonify({"isSuccess": False, "errorCode": -1, "errorMessage": str(e)}), 500
-
-    @app.route('/SetBaseline', methods=['POST'])
-    def set_baseline():
-        """重新记录当前前后距离和与偏航角作为纠偏基准"""
-        try:
-            global CurrentTaskID
-            data = request.json
-            task_id_gotten = data['TaskId']
-
-            if task_id_gotten != CurrentTaskID + 1:
-                error_response = {
-                    "isSuccess": False,
-                    "errorCode": -1,
-                    "errorMessage": "TaskId mismatch",
-                    "expectedTaskId": CurrentTaskID + 1
-                }
-                return jsonify(error_response), 400
-
-            car.set_baseline()
             CurrentTaskID += 1
             return jsonify({"isSuccess": True, "currentTaskId": CurrentTaskID})
         except Exception as e:

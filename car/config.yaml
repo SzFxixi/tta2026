@@ -5,10 +5,10 @@
 
 # 能够走的区域
 room:
-  x_min: 0.1
-  x_max: 4.5
-  y_min: 0.1
-  y_max: 8.8
+  x_min: 0.4
+  x_max: 4.8
+  y_min: 0.4
+  y_max: 9.2
   x_offset: 0.0
   y_offset: 0.0
 
@@ -28,9 +28,9 @@ server:
   long_distance_tolerance: 0.00001
   # SyncYaw: 偏角超过此阈值(度)才纠正
   sync_yaw_threshold_deg: 10.0
-  sync_yaw_step_min_deg: 5
-  sync_yaw_step_max_deg: 10.0
-  sync_yaw_max_iterations: 6
+  sync_yaw_step_min_deg: 3
+  sync_yaw_step_max_deg: 5.0
+  sync_yaw_max_iterations: 3
 
 # 客户端（pipeline 连接 Flask 的地址）
 client:
@@ -42,32 +42,45 @@ client:
   max_retries: 5
   lidar_beam_timeout: 3.0
   sanity_check_tolerance: 0.5
+  # 实时监控：偏离超此值 → 重规划；介于之间 → 移动完成后校正
+  drift_threshold: 0.15
+  hard_drift_threshold: 0.45
+  # 紧急避险：规划无解时最多探路轮数
+  max_probe_rounds: 10
 
 # 障碍物检测
 obstacle:
   lidar_timeout: 5.0
-  jump_threshold: 0.3
+  jump_threshold: 0.5
   expand_jump_ratio: 2.0
   cluster_min_beams: 3
   cluster_max_gap: 10
   cross_zero_merge_margin: 5
-  # 越界过滤用的房间边界（可略大于 room 边界）
-  filter_x_min: 0.2
-  filter_x_max: 4.7
-  filter_y_min: 0.2
+  # 障碍物过滤边界：超出此范围的视为噪声丢弃
+  filter_x_min: 0.3
+  filter_x_max: 4.6
+  filter_y_min: 0.3
   filter_y_max: 8.8
+  # 基于墙壁建模的偏差检测：实际距离比期望墙距小此值(米)则判定为障碍物
+  wall_deviation_threshold: 0.3
+  # 墙角附近(度)不参与墙壁偏差检测，因为期望墙距在墙角处不可靠
+  corner_margin_deg: 10.0
+  # 检测前向 gety 反方向(左)侧移距离，减少盲区，0=关闭
+  blind_spot_shift: 0.3
 
 # 路径规划
 path_planning:
   obstacle_margin: 0.5
   wall_margin: 0.5
-  grid_expand: 0.4
-  grid_x_step: 0.4
-  grid_y_step: 0.4
-  cost_dist_weight: 1.0
-  cost_risk_weight: 0.0
-  correction_corridor_width: 0.6
-  correction_min_interval: 1.0
+  grid_expand: 0.0
+  grid_x_step: 0.2
+  grid_y_step: 0.2
+  # 膨胀半径2：最短路径判定阈值(m)。任一段 < 此值 → 最短路径被阻断，启用非最短路径
+  expansion_radius_2: 0.5
+  # 膨胀半径3：硬过滤阈值(m)。任一段 < 此值 → 丢弃该候选路径
+  expansion_radius_3: 0.5
+  # 急停阈值(m)：行车中离障碍物 < 此值 → 急停 + 探路 + 重规划
+  emergency_stop_dist: 0.4
 
 # LiDAR 工具
 lidar:

@@ -1,5 +1,7 @@
 import json
 import os
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import math
 
 # 配置文件路径（与本模块同目录）
@@ -168,15 +170,23 @@ def segment_crosses_forbidden(ax, ay, bx, by, forbidden_zones):
     """线段 AB 是否穿过某个禁区（分段采样检测，均为绝对坐标）。"""
     if not forbidden_zones:
         return False
+    # 线段包围盒
+    seg_xmin, seg_xmax = min(ax, bx), max(ax, bx)
+    seg_ymin, seg_ymax = min(ay, by), max(ay, by)
     seg_len = math.hypot(bx - ax, by - ay)
     if seg_len < 0.001:
         return point_in_forbidden(ax, ay, forbidden_zones)
     n_samples = max(2, int(seg_len / 0.05))
-    for i in range(n_samples + 1):
-        t = i / n_samples
-        if point_in_forbidden(ax + (bx - ax) * t, ay + (by - ay) * t,
-                              forbidden_zones):
-            return True
+    for xmin, xmax, ymin, ymax in forbidden_zones:
+        # 包围盒不重叠 → 快速跳过
+        if seg_xmax < xmin or seg_xmin > xmax or seg_ymax < ymin or seg_ymin > ymax:
+            continue
+        for i in range(n_samples + 1):
+            t = i / n_samples
+            px = ax + (bx - ax) * t
+            py = ay + (by - ay) * t
+            if xmin <= px <= xmax and ymin <= py <= ymax:
+                return True
     return False
 
 

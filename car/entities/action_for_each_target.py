@@ -1,7 +1,11 @@
+
+# 这里x和y反了
 ACTIONS = {
     1: [
         {"type": "correct"},
         {"type": "rotate", "value": 90},
+        {"type": "stay"},
+        {"type": "move_rel", "dx": 0, "dy": -0.4},
         {"type": "stay"},
         {"type": "rotate", "value": -90},
     ],
@@ -9,11 +13,15 @@ ACTIONS = {
         {"type": "correct"},
         {"type": "rotate", "value": 90},
         {"type": "stay"},
+        {"type": "move_rel", "dx": 0, "dy": 0.4},
+        {"type": "stay"},
         {"type": "rotate", "value": -90},
     ],
     3: [
         {"type": "correct"},
         {"type": "rotate", "value": -90},
+        {"type": "stay"},
+        {"type": "move_rel", "dx": 0, "dy": 0.4},
         {"type": "stay"},
         {"type": "rotate", "value": 90},
     ],
@@ -21,10 +29,18 @@ ACTIONS = {
         {"type": "correct"},
         {"type": "rotate", "value": -90},
         {"type": "stay"},
+        {"type": "move_rel", "dx": 0, "dy": -0.4},
+        {"type": "stay"},
         {"type": "rotate", "value": 90},
     ],
     5: [
+        {"type": "correct"},
         {"type": "stay"},
+        {"type": "move_rel", "dx": 0, "dy": -0.3},
+        {"type": "stay"},
+        {"type": "move_rel", "dx": 0, "dy": 0.6},
+        {"type": "stay"},
+        {"type": "move_rel", "dx": 0, "dy": -0.3},
     ],
     6: [
         {"type": "correct"},
@@ -36,5 +52,4 @@ ACTIONS = {
 
 
 def get_actions(pid):
-    """获取点位 pid 的动作列表（按顺序执行）"""
     return ACTIONS.get(pid, [])
