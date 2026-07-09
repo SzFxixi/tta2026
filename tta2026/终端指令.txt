@@ -7,9 +7,37 @@ python Main.py --config configs/rescue_config.json
 
 192.168.31.131
 
+小车路由器：192.168.31.74
+
 mac:
 改变CameraSource里，把ffmpeg.exe改成ffmpeg
 cd /home/forlinx/PSDK/build/bin/
 ./PlaneServer
 python3 Main.py --config configs/rescue_config.json
 192.168.31.120
+
+
+
+# 视频流预览（不飞）
+  python Main.py --config configs/rescue_config.json --stream
+
+  # 单图检测
+  python Main.py --config configs/rescue_config.json --image output/scan_救援点1_0.jpg
+
+  # 仅巡检（任务一）
+  python Main.py --config configs/rescue_config.json
+
+  # 全流程巡检（任务一 + 投送 + 返航，无小车）
+  python Main.py --config configs/rescue_config.json --mission drone_full
+
+  # 完整任务（含小车）
+  python Main.py --config configs/rescue_config.json --mission delivery
+
+  # 单航点测试
+  python Main.py --config configs/rescue_config.json --waypoint "救援点1"
+
+  # H 伺服专项测试
+  python test_h_servo.py --config configs/rescue_config.json
+
+  # 离线模拟（无硬件）
+  python Main.py --config configs/test_offline.json

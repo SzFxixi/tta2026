@@ -94,7 +94,8 @@ class DroneNavigator:
                      x=float(item['x']), y=float(item['y']), z=float(item['z']),
                      rotation=float(item.get('rotation', 0.0)),
                      gimbal_pitch=float(item.get('gimbal_pitch', -90.0)),
-                     rotate_to=float(item.get('rotate_to', 0.0)))
+                     rotate_to=float(item.get('rotate_to', 0.0)),
+                     rotation_offset=float(item.get('rotation_offset', 0.0)))
             for i, item in enumerate(waypoints_data)
         ]
 
@@ -139,7 +140,7 @@ class DroneNavigator:
         if not self.takeoff():
             print('起飞失败')
             return
-        time.sleep(8)
+        time.sleep(6)
 
         print(f'飞往 {waypoint.name} ({waypoint.x}, {waypoint.y}, {waypoint.z})...')
         self.move_to(waypoint.x, waypoint.y, waypoint.z)
@@ -616,7 +617,7 @@ class DroneNavigator:
             raise RuntimeError('无人机起飞失败')
 
         print("[DroneNavigator] 等待起飞完成 & 状态稳定...")
-        time.sleep(8)
+        time.sleep(6)
 
         posture = self.drone.get_posture()
         base_yaw = float(posture.get('yaw', 0.0))
@@ -657,61 +658,14 @@ class DroneNavigator:
         print(f"[DroneNavigator] 扫描完毕，前往装货区 ({la.x}, {la.y}, {la.z})...")
         self.drone.move_to(la.x, la.y, la.z)
 
-        # ── 1. 云台朝下，检测 H 并伺服居中 ──
-        print(f"[DroneNavigator] 装货区: 第一轮 H 对齐...")
-        self._rotate_gimbal_with_recovery(self.loading_area.gimbal_pitch)
-        h_found = False
-        for attempt in range(self.servo_max_attempts):
-            frame = self._capture_fresh_frame(settle=4.0 if attempt == 0 else 3.0, read_time=4.0 if attempt == 0 else 3.0)
-            if frame is None:
-                continue
-            all_detections = self.detect_all(frame)
-            h_candidate = all_detections['h_candidate']
-            if h_candidate is not None and self._stream_broken:
-                print("[DroneNavigator] 装货区 断流后首帧有H，冲洗确认...")
-                self._stream_broken = False
-                t0 = time.time()
-                while time.time() - t0 < 3.0:
-                    self.camera.read()
-                time.sleep(1)
-                confirm = self._capture_fresh_frame(settle=2.0, read_time=2.0)
-                if confirm is not None:
-                    confirm_det = self.detect_all(confirm)
-                    if confirm_det['h_candidate'] is not None:
-                        h_candidate = confirm_det['h_candidate']
-                    else:
-                        continue
-                else:
-                    continue
-            if h_candidate is None:
-                if attempt > 0:
-                    ox, oy = self._next_spiral_offset(attempt)
-                    self.drone.move_to(la.x + ox, la.y + oy, la.z)
-                print(f"[DroneNavigator] 装货区第1轮 第{attempt}次: 未检测到 H")
-                continue
-            # 迭代伺服
-            for servo_iter in range(5):
-                moved = self._servo_toward_h(h_candidate['box'], frame.shape)
-                if not moved:
-                    break
-                time.sleep(2)
-                frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
-                if frame is None:
-                    break
-                re_h = self.detect_all(frame)['h_candidate']
-                if re_h is None:
-                    break
-                h_candidate = re_h
-            h_found = True
-            break
-
-        # ── 3. 旋转 180° ──
+        # ── 1. 旋转 180° ──
         print("[DroneNavigator] 装货区: 旋转 180°...")
         self.drone.rotate_yaw(184)
         time.sleep(2)
 
-        # ── 4. 第二轮 H 检测并伺服 ──
-        print(f"[DroneNavigator] 装货区: 第二轮 H 对齐...")
+        # ── 2. 云台朝下，H 检测并伺服 ──
+        print(f"[DroneNavigator] 装货区: H 对齐...")
+        self._rotate_gimbal_with_recovery(self.loading_area.gimbal_pitch)
         for attempt in range(self.servo_max_attempts):
             frame = self._capture_fresh_frame(settle=2.0, read_time=3.0)
             if frame is None:
