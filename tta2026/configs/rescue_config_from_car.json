@@ -10,7 +10,7 @@
   "target_labels": ["trapped_people", "fire_trapped_people", "ruin_trapped_people", "drop_water"],
   "loading_area": {
     "x": -0.4,
-    "y": -1.0,
+    "y": -1.0,  
     "z": 1.2,
     "gimbal_pitch": -90,
     "rotate_to": 3
@@ -88,7 +88,7 @@
       "z": 1.2,
       "rotation": 270,
       "gimbal_pitch": -90,
-      "rotate_to": 8
+      "rotate_to": 0
     },
     {
       "name": "救援点2",
@@ -97,7 +97,7 @@
       "z": 1.2,
       "rotation": 90,
       "gimbal_pitch": -90,
-      "rotate_to": 0
+      "rotate_to": 8
     },
     {
       "name": "救援点3",

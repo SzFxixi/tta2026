@@ -617,7 +617,7 @@ class DroneNavigator:
             raise RuntimeError('无人机起飞失败')
 
         print("[DroneNavigator] 等待起飞完成 & 状态稳定...")
-        time.sleep(6)
+        time.sleep(5)
 
         posture = self.drone.get_posture()
         base_yaw = float(posture.get('yaw', 0.0))

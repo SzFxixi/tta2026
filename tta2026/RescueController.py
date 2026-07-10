@@ -125,13 +125,13 @@ class RescueController:
         results = self.drone.scan_waypoints()
         self._update_rescue_results(results)
         self._write_csv()
-        time.sleep(17)  # 装货区降落后等稳定
+        time.sleep(16)  # 装货区降落后等稳定
 
         target_name = self._select_target_waypoint(results) or next(iter(results.keys()), None)
         if target_name is None:
             return False
         target_waypoint = self._find_waypoint(target_name)
-        rot = target_waypoint.rotation  # 救援点的 rotation 角度
+        rot = target_waypoint.rotation + target_waypoint.rotation_offset
         return_altitude = float(self.config.get('return_altitude', 1.2))
         preview_h = float(self.config.get('landing_preview_height', 0.8))
         print(f"[RescueController] 目标: {target_name}, rotation={rot}°")
@@ -145,7 +145,7 @@ class RescueController:
         time.sleep(4)
 
         # 1. 先后退 2×landing_offset（撤销降落时的前移）
-        back = -2 * float(self.config.get('landing_offset', 0.04))
+        back = -2.5 * float(self.config.get('landing_offset', 0.04))
         print(f"[RescueController] 先后退 {back:.2f}m")
         self.drone.move_to(self.drone.drone.state['x'] + back,
                            self.drone.drone.state['y'],
@@ -183,7 +183,7 @@ class RescueController:
         print(f"[RescueController] --- 飞目标点 {target_name} ---")
         self.drone.move_to(target_waypoint.x, target_waypoint.y, target_waypoint.z)
         self.drone._rotate_gimbal_with_recovery(-90)
-        self._servo_h_loop(rotation=rot)  # 首次伺服传 rotation 修正方向
+        self._servo_h_loop(rotation=target_waypoint.rotation)  # 首次伺服传 rotation 修正方向
 
         # 物理旋转 rotation 角度
         if abs(rot) > 0.1:
@@ -209,6 +209,24 @@ class RescueController:
         if abs(rot) > 0.1:
             print(f"[RescueController] 旋转 -{rot}° 恢复朝向")
             self.drone.rotate_yaw(-rot)
+
+        # 先飞 home 校准坐标系
+        hx, hy, hz = self.home_point
+        print(f"[RescueController] 飞往 home ({hx}, {hy}, {hz})...")
+        self.drone.move_to(hx, hy, hz)
+        print("[RescueController] home H 伺服对齐...")
+        self.drone._rotate_gimbal_with_recovery(-90)
+        self._servo_h_loop()
+        self.drone.move_to(self.drone.drone.state['x'] + float(self.config.get('landing_offset', 0.04)),
+                           self.drone.drone.state['y'],
+                           self.drone.drone.state['z'])
+        self.drone._rotate_gimbal_with_recovery(0)
+        print(f"[RescueController] 断言原点 (0, 0, {hz})")
+        self.drone.drone.state['x'] = 0.0
+        self.drone.drone.state['y'] = 0.0
+        self.drone.drone.state['z'] = hz
+
+        # 飞往相反坐标
         neg_x, neg_y = -target_waypoint.x, -target_waypoint.y
         print(f"[RescueController] 飞往相反坐标 ({neg_x}, {neg_y}, {return_altitude})")
         self.drone.move_to(neg_x, neg_y, return_altitude)
@@ -307,7 +325,7 @@ class RescueController:
         target_waypoint = self._find_waypoint(target_name)
         if target_waypoint is None:
             return False
-        rot = target_waypoint.rotation
+        rot = target_waypoint.rotation + target_waypoint.rotation_offset
         preview_h = float(self.config.get('landing_preview_height', 0.8))
         print(f"[RescueController] 飞往目标: {target_waypoint.name} ({target_waypoint.x}, {target_waypoint.y}, {target_waypoint.z}) rotation={rot}°")
         if not self.drone.move_to(target_waypoint.x, target_waypoint.y, target_waypoint.z):
@@ -316,7 +334,7 @@ class RescueController:
         # 目标点: 伺服 → 旋转 → 再伺服 → 预降 → 伺服 → 降落
         print("[RescueController] 目标点 H 对齐...")
         self.drone._rotate_gimbal_with_recovery(-90)
-        self._servo_h_loop(rotation=rot)
+        self._servo_h_loop(rotation=target_waypoint.rotation)
 
         if abs(rot) > 0.1:
             print(f"[RescueController] 旋转 {rot}°")
@@ -359,6 +377,24 @@ class RescueController:
         if abs(rot) > 0.1:
             print(f"[RescueController] 旋转 -{rot}° 恢复朝向")
             self.drone.rotate_yaw(-rot)
+
+        # 先飞 home 校准坐标系
+        hx, hy, hz = self.home_point
+        print(f"[RescueController] 飞往 home ({hx}, {hy}, {hz})...")
+        self.drone.move_to(hx, hy, hz)
+        print("[RescueController] home H 伺服对齐...")
+        self.drone._rotate_gimbal_with_recovery(-90)
+        self._servo_h_loop()
+        self.drone.move_to(self.drone.drone.state['x'] + float(self.config.get('landing_offset', 0.04)),
+                           self.drone.drone.state['y'],
+                           self.drone.drone.state['z'])
+        self.drone._rotate_gimbal_with_recovery(0)
+        print(f"[RescueController] 断言原点 (0, 0, {hz})")
+        self.drone.drone.state['x'] = 0.0
+        self.drone.drone.state['y'] = 0.0
+        self.drone.drone.state['z'] = hz
+
+        # 飞往相反坐标
         neg_x, neg_y = -target_waypoint.x, -target_waypoint.y
         print(f"[RescueController] 飞往相反坐标 ({neg_x}, {neg_y}, {return_altitude})")
         if not self.drone.move_to(neg_x, neg_y, return_altitude):

@@ -88,7 +88,8 @@
       "z": 1.2,
       "rotation": 270,
       "gimbal_pitch": -90,
-      "rotate_to": 8
+      "rotate_to": 8,
+      "rotation_offset": 0
     },
     {
       "name": "救援点2",
@@ -97,16 +98,18 @@
       "z": 1.2,
       "rotation": 90,
       "gimbal_pitch": -90,
-      "rotate_to": 0
+      "rotate_to": 0,
+      "rotation_offset": 8
     },
     {
       "name": "救援点3",
-      "x": 1.9,
+      "x": 1.8,
       "y": -3.8,
       "z": 1.2,
       "rotation": 90,
       "gimbal_pitch": -90,
-      "rotate_to": 0
+      "rotate_to": 0,
+      "rotation_offset": 0
     },
     {
       "name": "救援点4",
@@ -115,7 +118,8 @@
       "z": 1.2,
       "rotation": 270,
       "gimbal_pitch": -90,
-      "rotate_to": 10
+      "rotate_to": 10,
+      "rotation_offset": 0
     }
   ],
   "rescue_points": [
