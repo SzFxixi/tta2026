@@ -1,0 +1,39 @@
+{
+  "camera_source": "rtmp://0.0.0.0:1935/live",
+  "listen": true,
+  "listen_fps": 30,
+  "camera_loop": true,
+  "yolo_weights": "yolov8n.pt",
+  "yolo_weights_h": "yolov8n_h.pt",
+  "yolo_weights_grade": "yolov8n_grade.pt",
+  "confidence": 0.6,
+  "h_label": "H",
+  "grade_labels": ["ruin","collapse","leak_danger","leak_fire","leak_water","trapped_people","fire_trapped_people","ruin_trapped_people","drop_water","earthquake"],
+  "grade_mapping": {
+    "1": ["trapped_people", "fire_trapped_people","ruin_trapped_people","drop_water"],
+    "2": ["leak_danger", "collapse","ruin"],
+    "3": ["earthquake", "leak_fire", "leak_water"]
+  },
+  "grade_distance_scale": 10.0,
+  "search_max_attempts": 3,
+  "search_step": 0.5,
+  "drone": {
+    "enabled": true,
+    "ip": "192.168.31.172",
+    "port": 18080,
+    "max_retries": 5,
+    "initial_position": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 0.0
+    }
+  },
+  "waypoints": [
+    { "name": "测试点", "x": 1.0, "y": 0.0, "z": 1.5 }
+  ],
+  "output": {
+    "folder": "output",
+    "csv_filename": "rescue_levels.csv"
+  }
+}

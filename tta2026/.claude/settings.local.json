@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed -i '36s/^\\\\t\\\\t\\\\t/\\\\t\\\\t/' \"C:/Users/12057/Documents/snackkkk/snake/player/world.gd\")",
+      "Bash(sed -i '37s/^\\\\t\\\\t\\\\t/\\\\t\\\\t/' \"C:/Users/12057/Documents/snackkkk/snake/player/world.gd\")",
+      "Bash(pip list *)",
+      "Bash(python3 -c \"import PyPDF2; print\\('PyPDF2 available'\\)\")",
+      "Bash(python3 -c \"import pdfplumber; print\\('pdfplumber available'\\)\")",
+      "Bash(python3 -c \"import pikepdf; print\\('pikepdf available'\\)\")",
+      "Bash(pip install *)",
+      "Bash(python3 *)",
+      "Bash(python -c \"print\\('hello'\\)\")",
+      "Bash(python *)",
+      "Bash(file \"C:\\\\Users\\\\12057\\\\Desktop\\\\test\\\\dataset\\\\images\\\\train\"/*.jpg)",
+      "Bash(nvidia-smi *)",
+      "Bash(pip index *)",
+      "WebSearch",
+      "Bash(where ffplay *)",
+      "Bash(where ffmpeg *)",
+      "Bash(ffmpeg -version)"
+    ]
+  }
+}
