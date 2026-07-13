@@ -3,12 +3,8 @@
   "listen": true,
   "show_camera": false,
   "landing_offset": 0.04,
-  "home_point": {
-    "x": 0.7,
-    "y": 0.2,
-    "z": 1.2
-  },
-  "landing_preview_height": 0.5,
+  "home_point": { "x": 0.8, "y": 0.2, "z": 1.2, "rotate_yaw": 9 },
+  "landing_preview_height": 0.6,
   "target_grade": "1",
   "target_waypoint_name": "",
   "target_labels": [
@@ -69,6 +65,10 @@
   "search_step": 0.1,
   "h_search_max_height": 2.5,
   "h_search_step_height": 0.3,
+  "servo_flush": false,
+  "servo_settle_extra": 0.0,
+  "servo_max_cumulative": 1.5,
+  "servo_consecutive_limit": 3,
   "drone": {
     "enabled": true,
     "ip": "192.168.31.172",
@@ -107,7 +107,7 @@
       "rotation": 90,
       "gimbal_pitch": -90,
       "rotate_to": 0,
-      "rotation_offset": 8
+      "rotation_offset": 3
     },
     {
       "name": "救援点3",
