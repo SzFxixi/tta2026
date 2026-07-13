@@ -120,6 +120,10 @@ class DroneNavigator:
         self.camera.release()
         return success
 
+    def reset(self) -> bool:
+        print('[DroneNavigator] 重置飞控状态')
+        return self.drone.reset()
+
     def move_to(self, x: float, y: float, z: float) -> bool:
         return self.drone.move_to(x, y, z)
 
@@ -439,7 +443,7 @@ class DroneNavigator:
                 if waypoint.rotation:
                     down_frame = self._rotate_frame(down_frame, waypoint.rotation)
                 down_det = self.detect_all(down_frame)
-                if down_det['h_，candidate'] is not None:
+                if down_det['h_candidate'] is not None:
                     print(f"[DroneNavigator] {waypoint.name} 降低后再次伺服 H")
                     for _ in range(3):
                         moved = self._servo_toward_h(down_det['h_candidate']['box'], down_frame.shape, rotation=waypoint.rotation)
