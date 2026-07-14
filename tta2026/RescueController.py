@@ -34,6 +34,7 @@ class RescueController:
         hp = config.get("home_point", {})
         self.home_point = (float(hp.get("x", 0.7)), float(hp.get("y", 1.3)),
                            float(hp.get("z", 1.2)))
+        self.home_rotate_yaw = float(hp.get("rotate_yaw", 0.0))
 
     def execute_scan_mission(self) -> bool:
         """执行一次完整的无人机巡检扫描任务。返回是否全部扫描成功。"""
@@ -66,9 +67,12 @@ class RescueController:
     def _servo_h_loop(self, rotation: float = 0.0, max_search: int = 3, max_servo: int = 5):
         """内部辅助：云台朝下搜索 H 并迭代伺服居中。
         rotation: 不为0时传给 _servo_toward_h 修正坐标系方向。"""
+        settle_extra = self.drone.servo_settle_extra
         for _ in range(max_search):
-            frame = self.drone._capture_fresh_frame(settle=3.0)
+            frame = self.drone._capture_fresh_frame(settle=3.0 + settle_extra, drain_first=True)
             if frame is None: continue
+            if abs(rotation) > 0.1:
+                frame = self.drone._rotate_frame(frame, rotation)
             det = self.drone.detect_all(frame)
             if det['h_candidate']:
                 if self.drone._stream_broken:
@@ -78,8 +82,11 @@ class RescueController:
                     while time.time() - t0 < 3.0:
                         self.drone.camera.read()
                     time.sleep(1)
-                    confirm = self.drone._capture_fresh_frame(settle=2.0, read_time=2.0)
+                    confirm = self.drone._capture_fresh_frame(settle=2.0 + settle_extra, read_time=2.0,
+                                                               drain_first=True)
                     if confirm is not None:
+                        if abs(rotation) > 0.1:
+                            confirm = self.drone._rotate_frame(confirm, rotation)
                         recheck = self.drone.detect_all(confirm)
                         if recheck['h_candidate'] is not None:
                             det = recheck
@@ -87,12 +94,16 @@ class RescueController:
                             continue
                     else:
                         continue
+                self.drone._reset_servo_memory()
                 for __ in range(max_servo):
                     moved = self.drone._servo_toward_h(det['h_candidate']['box'], frame.shape, rotation=rotation)
                     if not moved: break
                     time.sleep(2)
-                    frame = self.drone._capture_fresh_frame(settle=2.0, read_time=2.0)
+                    frame = self.drone._capture_fresh_frame(settle=2.0 + settle_extra,
+                                                             read_time=2.0, drain_first=True)
                     if frame is None: break
+                    if abs(rotation) > 0.1:
+                        frame = self.drone._rotate_frame(frame, rotation)
                     det = self.drone.detect_all(frame)
                     if det['h_candidate'] is None: break
                 return True
@@ -156,7 +167,12 @@ class RescueController:
             print("[RescueController] 旋转180° 失败")
             return False
 
-        # 3. 飞往 home_point 并 H 伺服对齐
+        # 3. 旋转到 home 所需朝向
+        if abs(self.home_rotate_yaw) > 0.1:
+            print(f"[RescueController] home 旋转 {self.home_rotate_yaw}°")
+            self.drone.rotate_yaw(self.home_rotate_yaw)
+
+        # 4. 飞往 home_point 并 H 伺服对齐
         hx, hy, hz = self.home_point
         print(f"[RescueController] 飞往 home ({hx}, {hy}, {hz})...")
         if not self.drone.move_to(hx, hy, hz):
@@ -226,12 +242,7 @@ class RescueController:
         self.drone.drone.state['y'] = 0.0
         self.drone.drone.state['z'] = hz
 
-        # 飞往相反坐标
-        neg_x, neg_y = -target_waypoint.x, -target_waypoint.y
-        print(f"[RescueController] 飞往相反坐标 ({neg_x}, {neg_y}, {return_altitude})")
-        self.drone.move_to(neg_x, neg_y, return_altitude)
-
-        print("[RescueController] --- 返航点 H对齐降落 ---")
+        print("[RescueController] --- home点 H对齐降落 ---")
         self._servo_and_land()
 
         print("[RescueController] ====== 全流程测试完成 ======")
@@ -289,8 +300,8 @@ class RescueController:
         self.drone.drone.state['x'] = saved_loading['x']
         self.drone.drone.state['y'] = saved_loading['y']
 
-        # 1. 先后退 2×landing_offset
-        back = -2 * float(self.config.get('landing_offset', 0.04))
+        # 1. 先后退 2.5×landing_offset
+        back = -2.5 * float(self.config.get('landing_offset', 0.04))
         print(f"[RescueController] 先后退 {back:.2f}m")
         self.drone.move_to(self.drone.drone.state['x'] + back,
                            self.drone.drone.state['y'],
@@ -301,7 +312,12 @@ class RescueController:
         if not self.drone.rotate_yaw(180):
             return False
 
-        # 3. 飞往 home_point 并 H 伺服对齐，断言原点
+        # 3. 旋转到 home 所需朝向
+        if abs(self.home_rotate_yaw) > 0.1:
+            print(f"[RescueController] home 旋转 {self.home_rotate_yaw}°")
+            self.drone.rotate_yaw(self.home_rotate_yaw)
+
+        # 4. 飞往 home_point 并 H 伺服对齐，断言原点
         hx, hy, hz = self.home_point
         return_altitude = float(self.config.get('return_altitude', 1.2))
         print(f"[RescueController] 飞往 home ({hx}, {hy}, {hz})...")
@@ -394,13 +410,7 @@ class RescueController:
         self.drone.drone.state['y'] = 0.0
         self.drone.drone.state['z'] = hz
 
-        # 飞往相反坐标
-        neg_x, neg_y = -target_waypoint.x, -target_waypoint.y
-        print(f"[RescueController] 飞往相反坐标 ({neg_x}, {neg_y}, {return_altitude})")
-        if not self.drone.move_to(neg_x, neg_y, return_altitude):
-            return False
-
-        print("[RescueController] 返航点 H 对齐...")
+        print("[RescueController] home点 H 对齐降落...")
         self._servo_and_land()
 
         print("[RescueController] ====== 完整任务完成 ======")
@@ -418,7 +428,7 @@ class RescueController:
             else:
                 print(f"[RescueController] 警告: {point_name} 扫描失败 — {result.get('reason', 'unknown')}")
 
-    def wait_for_car_signal(self, signal_name: str, timeout: float | None = None) -> bool:
+    def wait_for_car_signal(self, signal_name: str, timeout: Optional[float] = None) -> bool:
         if self.car is None:
             print(f"[RescueController] 小车控制器未设置，默认认为信号已到达: {signal_name}")
             return True
@@ -427,7 +437,7 @@ class RescueController:
     def _find_waypoint(self, name: str):
         return next((wp for wp in self.drone.waypoints if wp.name == name), None)
 
-    def _select_target_waypoint(self, results: Dict[str, Dict[str, Any]]) -> str | None:
+    def _select_target_waypoint(self, results: Dict[str, Dict[str, Any]]) -> Optional[str]:
         # 优先级 1: target_grade — 按等级数字("1"/"2"/"3")匹配
         target_grade = self.config.get('target_grade')
         if target_grade is not None:

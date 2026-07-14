@@ -51,7 +51,7 @@ class CarController:
 
     # ── 信号同步 ──
 
-    def wait_for_signal(self, signal_name: str, timeout: float | None = None) -> bool:
+    def wait_for_signal(self, signal_name: str, timeout: Optional[float] = None) -> bool:
         if self.client is None:
             print(f"[CarController] 小车未接入, 默认通过: {signal_name}")
             return True
