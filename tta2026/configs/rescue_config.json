@@ -2,14 +2,14 @@
   "camera_source": "rtmp://0.0.0.0:1935/live",
   "listen": true,
   "show_camera": false,
-  "landing_offset": 0.04,
+  "landing_offset": 0.05,
   "home_point": { "x": 0.7, "y": 0.2, "z": 1.2 },
-  "landing_preview_height": 0.6,
+  "landing_preview_height": 0.5,
   "target_grade": "1",
   "target_waypoint_name": "",
   "target_labels": ["trapped_people", "fire_trapped_people", "ruin_trapped_people", "drop_water"],
   "loading_area": {
-    "x": -0.4,
+    "x": -0.65,
     "y": -1.0,
     "z": 1.2,
     "gimbal_pitch": -90,
@@ -45,7 +45,7 @@
     ],
     "2": [
       "leak_danger",
-      "collapse"
+      "collaspe"
 
     ],
     "3": [
@@ -89,21 +89,21 @@
       "rotation": 270,
       "gimbal_pitch": -90,
       "rotate_to": 8,
-      "rotation_offset": 0
+      "rotation_offset": 5
     },
     {
       "name": "救援点2",
       "x": -1.35,
-      "y": 2.75,
+      "y": 2.6,
       "z": 1.2,
       "rotation": 90,
       "gimbal_pitch": -90,
       "rotate_to": 0,
-      "rotation_offset": 8
+      "rotation_offset": 7
     },
     {
       "name": "救援点3",
-      "x": 1.8,
+      "x": 1.65,
       "y": -3.8,
       "z": 1.2,
       "rotation": 90,
@@ -113,12 +113,12 @@
     },
     {
       "name": "救援点4",
-      "x": -0.5,
+      "x": -0.65,
       "y": -4.0,
       "z": 1.2,
       "rotation": 270,
       "gimbal_pitch": -90,
-      "rotate_to": 10,
+      "rotate_to": 14 ,
       "rotation_offset": 0
     }
   ],

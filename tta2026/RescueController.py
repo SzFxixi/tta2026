@@ -142,10 +142,10 @@ class RescueController:
         if not self.drone.takeoff():
             print("[RescueController] 装货区起飞失败")
             return False
-        time.sleep(4)
+        time.sleep(6)
 
         # 1. 先后退 2×landing_offset（撤销降落时的前移）
-        back = -2.5 * float(self.config.get('landing_offset', 0.04))
+        back = -2 * float(self.config.get('landing_offset', 0.04))
         print(f"[RescueController] 先后退 {back:.2f}m")
         self.drone.move_to(self.drone.drone.state['x'] + back,
                            self.drone.drone.state['y'],
@@ -203,7 +203,7 @@ class RescueController:
         print("[RescueController] --- 起飞返航 ---")
         self.drone.reset(); time.sleep(1)
         self.drone.takeoff()
-        time.sleep(4)
+        time.sleep(6)
         self.drone.drone.state['x'] = landing_state['x']
         self.drone.drone.state['y'] = landing_state['y']
         if abs(rot) > 0.1:
@@ -285,7 +285,7 @@ class RescueController:
         time.sleep(1)
         if not self.drone.takeoff():
             return False
-        time.sleep(4)
+        time.sleep(6)
         self.drone.drone.state['x'] = saved_loading['x']
         self.drone.drone.state['y'] = saved_loading['y']
 
