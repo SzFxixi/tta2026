@@ -2,18 +2,28 @@
   "camera_source": "rtmp://0.0.0.0:1935/live",
   "listen": true,
   "show_camera": false,
-  "landing_offset": 0.04,
-  "home_point": { "x": 0, "y": 0, "z": 1.2,"rotate_yaw":0 },
-  "landing_preview_height": 0.6,
+  "landing_offset": 0.05,
+  "home_point": {
+    "x": 0.7,
+    "y": 0.2,
+    "z": 1.2,
+    "rotate_yaw": 7
+  },
+  "landing_preview_height": 0.5,
   "target_grade": "1",
   "target_waypoint_name": "",
-  "target_labels": ["trapped_people", "fire_trapped_people", "ruin_trapped_people", "drop_water"],
+  "target_labels": [
+    "trapped_people",
+    "fire_trapped_people",
+    "ruin_trapped_people",
+    "drop_water"
+  ],
   "loading_area": {
-    "x": -0.9,
-    "y": -0.6,
+    "x": -0.65,
+    "y": -1.0,
     "z": 1.2,
     "gimbal_pitch": -90,
-    "rotate_to": 0
+    "rotate_to": 5
   },
   "camera_ffmpeg_opts": {
     "rtsp_transport": "tcp"
@@ -21,7 +31,7 @@
   "yolo_weights": "yolov8n.pt",
   "yolo_weights_h": "yolov8n_h.pt",
   "yolo_weights_grade": "yolov8n_grade.pt",
-  "confidence": 0.6,
+  "confidence": 0.4,
   "h_label": "H",
   "grade_labels": [
     "ruin",
@@ -41,12 +51,11 @@
       "fire_trapped_people",
       "ruin_trapped_people",
       "drop_water",
-            "ruin"
+      "ruin"
     ],
     "2": [
       "leak_danger",
       "collaspe"
-
     ],
     "3": [
       "earthquake",
@@ -54,19 +63,18 @@
       "leak_water"
     ]
   },
+  "h_marker_size": 0.1,
   "h_angle_correction_enabled": true,
-  "h_angle_scale": 1.4,
   "h_angle_conf_threshold": 0.20,
   "h_angle_sign": 1.0,
   "h_angle_max_correction": 30.0,
   "h_angle_debug": false,
-  "h_marker_size": 0.13,
   "grade_search_attempts": 5,
   "grade_search_step": 0.2,
   "grade_distance_scale": 2.0,
   "search_max_attempts": 5,
   "search_step": 0.1,
-  "h_search_max_height": 2.5,
+  "h_search_max_height": 2.2,
   "h_search_step_height": 0.3,
   "drone": {
     "enabled": true,
@@ -79,13 +87,14 @@
       "yaw": 0.0
     },
     "speed": {
-      "translate": 0.45,
+      "translate": 0.3,
       "rotate": 15.0
     },
     "threshold": {
       "translate": 200,
       "rotate": 200
-    }
+    },
+    "max_retries": 15
   },
   "waypoints": [
     {
@@ -95,23 +104,23 @@
       "z": 1.2,
       "rotation": 90,
       "gimbal_pitch": -90,
-      "rotate_to": 0,
-      "rotation_offset": 0
+      "rotate_to": 9,
+      "rotation_offset": 5
     },
     {
       "name": "救援点1",
-      "x": -1.3,
+      "x": -1.35,
       "y": 2.6,
       "z": 1.2,
       "rotation": 90,
       "gimbal_pitch": -90,
       "rotate_to": 0,
-      "rotation_offset": 0
+      "rotation_offset": 7
     },
     {
       "name": "救援点3",
-      "x": 1.3,
-      "y": -4.0,
+      "x": 1.65,
+      "y": -3.8,
       "z": 1.2,
       "rotation": -90,
       "gimbal_pitch": -90,
@@ -120,12 +129,12 @@
     },
     {
       "name": "救援点4",
-      "x": -0.9,
+      "x": -0.65,
       "y": -4.0,
       "z": 1.2,
       "rotation": -90,
       "gimbal_pitch": -90,
-      "rotate_to": 0,
+      "rotate_to": 16,
       "rotation_offset": 0
     }
   ],
@@ -151,5 +160,6 @@
     "enabled": false,
     "ip": "10.203.94.227",
     "port": 5000
-  }
+  },
+  "servo_settle_extra": 1.0
 }

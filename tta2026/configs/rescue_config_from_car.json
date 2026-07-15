@@ -25,7 +25,7 @@
   "h_label": "H",
   "grade_labels": [
     "ruin",
-    "collapse",
+    "collaspe",
     "leak_danger",
     "leak_fire",
     "leak_water",
@@ -45,7 +45,7 @@
     ],
     "2": [
       "leak_danger",
-      "collapse"
+      "collaspe"
 
     ],
     "3": [

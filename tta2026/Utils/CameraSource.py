@@ -145,37 +145,6 @@ class CameraSource:
         except Empty:
             return False, None
 
-    def drain_queue(self) -> int:
-        """排空帧队列中所有缓冲帧，返回排空帧数。仅对 listen 模式有效。"""
-        drained = 0
-        if self._process is not None:
-            while True:
-                try:
-                    self._frame_queue.get_nowait()
-                    drained += 1
-                except Empty:
-                    break
-        elif self.capture is not None:
-            # 非 listen 模式：快速 grab 丢弃缓冲帧
-            for _ in range(30):
-                if not self.capture.grab():
-                    break
-                drained += 1
-        if drained > 0:
-            print(f"[CameraSource] 排空 {drained} 帧缓冲")
-        return drained
-
-    def read_blocking(self, timeout: float = 3.0) -> Tuple[bool, Optional[Any]]:
-        """阻塞等待一帧（仅 listen 模式有效），超时返回 (False, None)。"""
-        if self._process is not None:
-            try:
-                frame = self._frame_queue.get(timeout=timeout)
-                return True, frame
-            except Empty:
-                return False, None
-        # 非 listen 模式回退到非阻塞读取
-        return self.read()
-
     def _restart_listen(self) -> None:
         """重启 ffmpeg 监听进程。"""
         self._running = False
@@ -195,6 +164,35 @@ class CameraSource:
             except Empty:
                 break
         self._init_listen()
+
+    def drain_queue(self) -> int:
+        """排空帧队列中所有缓冲帧，返回排空帧数。"""
+        drained = 0
+        if self._process is not None:
+            while True:
+                try:
+                    self._frame_queue.get_nowait()
+                    drained += 1
+                except Empty:
+                    break
+        elif self.capture is not None:
+            for _ in range(30):
+                if not self.capture.grab():
+                    break
+                drained += 1
+        if drained > 0:
+            print(f"[CameraSource] 排空 {drained} 帧缓冲")
+        return drained
+
+    def read_blocking(self, timeout: float = 3.0) -> Tuple[bool, Optional[Any]]:
+        """阻塞等待一帧，超时返回 (False, None)。"""
+        if self._process is not None:
+            try:
+                frame = self._frame_queue.get(timeout=timeout)
+                return True, frame
+            except Empty:
+                return False, None
+        return self.read()
 
     # ── 初始化入口 ───────────────────────────────────────────
 

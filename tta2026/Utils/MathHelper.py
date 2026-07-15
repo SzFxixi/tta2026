@@ -1,12 +1,11 @@
 import math
-from typing import Tuple
 
 
 class MathHelper:
     """坐标变换和基础数学工具。"""
 
     @staticmethod
-    def rotate_axis(x: float, y: float, angle: float) -> Tuple[float, float]:
+    def rotate_axis(x: float, y: float, angle: float):
         """旋转坐标系。angle 弧度制，逆时针为正。"""
         x_new = x * math.cos(angle) - y * math.sin(angle)
         y_new = x * math.sin(angle) + y * math.cos(angle)
@@ -25,7 +24,7 @@ class MathHelper:
         return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
 
     @staticmethod
-    def standardize(x: float, y: float, z: float, standard: float = 1.0) -> Tuple[float, float, float, float]:
+    def standardize(x: float, y: float, z: float, standard: float = 1.0):
         """将向量标准化到指定长度，返回 (x, y, z, 原长度)。"""
         length = (x ** 2 + y ** 2 + z ** 2) ** 0.5
         if abs(standard) < 1e-7:

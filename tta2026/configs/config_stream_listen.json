@@ -8,10 +8,10 @@
   "yolo_weights_grade": "yolov8n_grade.pt",
   "confidence": 0.6,
   "h_label": "H",
-  "grade_labels": ["ruin","collapse","leak_danger","leak_fire","leak_water","trapped_people","fire_trapped_people","ruin_trapped_people","drop_water","earthquake"],
+  "grade_labels": ["ruin","collaspe","leak_danger","leak_fire","leak_water","trapped_people","fire_trapped_people","ruin_trapped_people","drop_water","earthquake"],
   "grade_mapping": {
     "1": ["trapped_people", "fire_trapped_people","ruin_trapped_people","drop_water"],
-    "2": ["leak_danger", "collapse","ruin"],
+    "2": ["leak_danger", "collaspe","ruin"],
     "3": ["earthquake", "leak_fire", "leak_water"]
   },
   "grade_distance_scale": 10.0,
