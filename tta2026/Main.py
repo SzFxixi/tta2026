@@ -12,6 +12,7 @@ def main() -> None:
     parser.add_argument('--image', type=str, default=None, help='单张图片检测（不飞行）')
     parser.add_argument('--stream', action='store_true', help='实时拉流测试（H + 等级检测画面，不飞行）')
     parser.add_argument('--waypoint', type=str, default=None, help='飞往指定救援点并对齐 H（例: "救援点1"）')
+    parser.add_argument('--half', type=str, default=None, help='后半程测试：从装货区起飞飞往指定救援点并返航（例: "救援点1"）')
     parser.add_argument('--mission', type=str, default='scan', choices=['scan', 'delivery', 'drone_full'],
                         help='任务模式：scan=仅巡检，delivery=完整任务，drone_full=无人机全流程测试(无小车)')
     args = parser.parse_args()
@@ -36,6 +37,11 @@ def main() -> None:
             print(f'未找到航点: {args.waypoint}')
             return
         navigator.test_single_waypoint(wp)
+        return
+
+    if args.half:
+        controller = RescueController(config)
+        controller.execute_half_mission(args.half)
         return
 
     controller = RescueController(config)

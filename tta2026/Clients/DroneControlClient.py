@@ -247,7 +247,7 @@ class DroneControlClient:
 
         # StartTakeoff 失败 → 用速度指令垂直上升
         print("[DroneControlClient] StartTakeoff 被拒，尝试速度起飞...")
-        target_z = 1.5
+        target_z = 1.8
         dz = target_z - self.state["z"]
         if dz < 0.5:
             dz = 1.5

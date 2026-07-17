@@ -53,9 +53,16 @@ class DroneNavigator:
         self.h_search_max_height = float(config.get('h_search_max_height', 2.5))
         self.h_search_step_height = float(config.get('h_search_step_height', 0.2))
         self.servo_settle_extra = float(config.get('servo_settle_extra', 0.0))
-        self.servo_tolerance_preview = float(config.get('servo_tolerance_preview', 0.01))
+        self.servo_tolerance_preview = float(config.get('servo_tolerance_preview', 0.005))
+        self.servo_min_step = float(config.get('servo_min_step', 0.0))  # 0=不启用
         self.servo_max_cumulative = float(config.get('servo_max_cumulative', 1.5))
         self.servo_consecutive_limit = int(config.get('servo_consecutive_limit', 3))
+        # 伺服悬停时间控制参数
+        self.servo_settle = float(config.get('servo_settle', 1.0))
+        self.servo_read = float(config.get('servo_read', 1.0))
+        self.servo_sleep = float(config.get('servo_sleep', 0.8))
+        self.servo_iters = int(config.get('servo_iters', 3))
+        self.angle_sleep = float(config.get('angle_sleep', 0.8))
         # ── H 角度校正参数 ──
         self.h_angle_enabled = bool(config.get('h_angle_correction_enabled', True))
         self.h_angle_conf_threshold = float(config.get('h_angle_conf_threshold', 0.20))
@@ -162,8 +169,15 @@ class DroneNavigator:
             print('起飞失败')
             return
         time.sleep(6)
+        time.sleep(3)
+        for retry in range(3):
+            if self.drone.move_to(0.0, 0.0, 1.5):
+                break
+            print(f'升至1.5m失败(第{retry+1}次)，重试...')
+            time.sleep(2)
         self.drone.state['x'] = 0.0
         self.drone.state['y'] = 0.0
+        self.drone.state['z'] = 1.5
 
         print(f'飞往 {waypoint.name} ({waypoint.x}, {waypoint.y}, {waypoint.z})...')
         self.move_to(waypoint.x, waypoint.y, waypoint.z)
@@ -184,8 +198,8 @@ class DroneNavigator:
             if current_z > waypoint.z + 0.01:
                 self.move_to(waypoint.x, waypoint.y, current_z)
 
-            frame = self._capture_fresh_frame(settle=4.0 if abs(current_z-waypoint.z)<0.01 else 3.0,
-                                               read_time=4.0 if abs(current_z-waypoint.z)<0.01 else 3.0)
+            frame = self._capture_fresh_frame(settle=self.servo_settle*2 if abs(current_z-waypoint.z)<0.01 else self.servo_settle*1.5,
+                                               read_time=self.servo_read*2 if abs(current_z-waypoint.z)<0.01 else self.servo_read*1.5)
             all_det = self.detect_all(frame)
             h = all_det['h_candidate']
             g_label = all_det['grade_info'].get('label', 'unknown')
@@ -193,33 +207,33 @@ class DroneNavigator:
             if h is None:
                 current_z += self.h_search_step_height
                 continue
-            for i in range(5):
+            for i in range(self.servo_iters):
                 moved = self._servo_toward_h(h['box'], frame.shape)
                 if not moved: break
-                time.sleep(2)
-                frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                time.sleep(self.servo_sleep)
+                frame = self._capture_fresh_frame()
                 h = self.detect_all(frame)['h_candidate']
                 if h is None: break
             # ── 角度校正 ──
             if h is not None:
-                angle_frame = self._capture_fresh_frame(settle=2.0, read_time=3.0)
+                angle_frame = self._capture_fresh_frame(read_time=self.servo_read*1.5)
                 if angle_frame is not None:
                     recheck = self.detect_all(angle_frame)
                     if recheck['h_candidate'] is not None:
                         applied = self.correct_h_rotation(
                             angle_frame, recheck['h_candidate']['box'])
                         if abs(applied) > 0.5:
-                            time.sleep(2)
-                            post_rot = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                            time.sleep(self.servo_sleep)
+                            post_rot = self._capture_fresh_frame()
                             if post_rot is not None:
                                 redet = self.detect_all(post_rot)
                                 if redet['h_candidate'] is not None:
-                                    for _ in range(3):
+                                    for _ in range(self.servo_iters):
                                         moved = self._servo_toward_h(
                                             redet['h_candidate']['box'], post_rot.shape)
                                         if not moved: break
-                                        time.sleep(2)
-                                        post_rot = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                                        time.sleep(self.servo_sleep)
+                                        post_rot = self._capture_fresh_frame()
                                         if post_rot is None: break
                                         redet = self.detect_all(post_rot)
                                         if redet['h_candidate'] is None: break
@@ -232,16 +246,16 @@ class DroneNavigator:
         # 降回原高度并再次伺服
         if current_z > waypoint.z + 0.01:
             self.move_to(self.drone.state['x'], self.drone.state['y'], waypoint.z)
-            time.sleep(2)
-            down_frame = self._capture_fresh_frame(settle=2.0, read_time=3.0)
+            time.sleep(self.servo_sleep)
+            down_frame = self._capture_fresh_frame(read_time=self.servo_read*1.5)
             down_det = self.detect_all(down_frame)
             if down_det['h_candidate'] is not None:
                 print('  降低后再次伺服 H')
-                for _ in range(3):
+                for _ in range(self.servo_iters):
                     moved = self._servo_toward_h(down_det['h_candidate']['box'], down_frame.shape)
                     if not moved: break
-                    time.sleep(2)
-                    down_frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                    time.sleep(self.servo_sleep)
+                    down_frame = self._capture_fresh_frame()
                     down_det = self.detect_all(down_frame)
                     if down_det['h_candidate'] is None: break
 
@@ -331,7 +345,7 @@ class DroneNavigator:
         print(f"[DroneNavigator] H 角度偏差 {angle:.1f}°"
               f" → 校正旋转 {correction:.1f}° (sign={self.h_angle_sign}, scale={self.h_angle_scale})")
         self.drone.rotate_yaw(correction)
-        time.sleep(1.5)
+        time.sleep(self.angle_sleep)
         return correction
 
     # ------------------------------------------------------------------
@@ -352,6 +366,17 @@ class DroneNavigator:
         grade_info: Dict[str, Any] = {'label': 'unknown', 'confidence': 0.0, 'box': [], 'distance': float('inf')}
         if h_candidate is not None:
             grade_info = self.find_grade_near_h(h_candidate['box'], grade_detection)
+        else:
+            # H 不存在时，从 grade_objects 中取置信度最高的作为等级
+            grade_objects = grade_detection.get('objects', [])
+            if grade_objects:
+                best = max(grade_objects, key=lambda obj: obj.get('confidence', 0))
+                grade_info = {
+                    'label': best['label'],
+                    'confidence': best['confidence'],
+                    'box': best['box'],
+                    'distance': 0.0,
+                }
 
         return {
             'h_candidate': h_candidate,
@@ -393,6 +418,14 @@ class DroneNavigator:
             drone_dx, drone_dy = MathHelper.rotate_axis(drone_dx, drone_dy, rot_rad)
 
         offset_m = (drone_dx ** 2 + drone_dy ** 2) ** 0.5
+
+        # 最小步长：低于此值放大（加快移动速度）
+        if self.servo_min_step > 0 and servo_tolerance < offset_m < self.servo_min_step:
+            scale = self.servo_min_step / offset_m
+            drone_dx *= scale
+            drone_dy *= scale
+            offset_m = self.servo_min_step
+            print(f"[DroneNavigator] 偏移 {offset_m/scale:.3f}m < 最小步长 {self.servo_min_step}m，放大至 {offset_m:.3f}m")
 
         if offset_m < servo_tolerance:
             print(f"[DroneNavigator] 视觉伺服: H 已居中 (offset={offset_m:.3f}m)")
@@ -458,11 +491,15 @@ class DroneNavigator:
         """检查 ffmpeg 监听进程是否存活。"""
         return (self.camera._process is not None and self.camera._process.poll() is None)
 
-    def _capture_fresh_frame(self, settle: float = 3.0, read_time: float = 4.0,
+    def _capture_fresh_frame(self, settle: float = None, read_time: float = None,
                              drain_first: bool = False) -> Optional[Any]:
         """等无人机稳定 settle 秒，持续读帧，返回最后一帧。
         无限重试 + ffmpeg 健康检查。断流后重连时多冲洗旧帧。
         drain_first=True 时先排空帧队列，再阻塞等待真正的新帧。"""
+        if settle is None:
+            settle = self.servo_settle
+        if read_time is None:
+            read_time = self.servo_read
         time.sleep(settle)
 
         # ── 排空缓冲帧 ──
@@ -536,8 +573,8 @@ class DroneNavigator:
 
             # 取帧（内部无限重试 + ffmpeg 健康检查）
             frame = self._capture_fresh_frame(
-                settle=4.0 if abs(current_z - waypoint.z) < 0.01 else 3.0,
-                read_time=4.0 if abs(current_z - waypoint.z) < 0.01 else 3.0)
+                settle=self.servo_settle*2 if abs(current_z - waypoint.z) < 0.01 else self.servo_settle*1.5,
+                read_time=self.servo_read*2 if abs(current_z - waypoint.z) < 0.01 else self.servo_read*1.5)
 
             if waypoint.rotation:
                 frame = self._rotate_frame(frame, waypoint.rotation)
@@ -561,7 +598,7 @@ class DroneNavigator:
                     while time.time() - t0 < 3.0:
                         self.camera.read()
                     time.sleep(1)
-                    confirm = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                    confirm = self._capture_fresh_frame()
                     if confirm is not None:
                         if waypoint.rotation:
                             confirm = self._rotate_frame(confirm, waypoint.rotation)
@@ -587,14 +624,14 @@ class DroneNavigator:
             self._rotate_gimbal_with_recovery(0)
             return {'success': False, 'reason': 'not_found'}
 
-        # 找到 H → 迭代伺服直到居中（最多 5 次微调）
-        for servo_iter in range(5):
+        # 找到 H → 迭代伺服直到居中
+        for servo_iter in range(self.servo_iters):
             moved = self._servo_toward_h(h_candidate['box'], frame.shape, rotation=waypoint.rotation)
             if not moved:
                 print(f"[DroneNavigator] {waypoint.name} H 已居中 (迭代{servo_iter+1}次)")
                 break
-            time.sleep(2)
-            frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+            time.sleep(self.servo_sleep)
+            frame = self._capture_fresh_frame()
             if waypoint.rotation:
                 frame = self._rotate_frame(frame, waypoint.rotation)
             re_det = self.detect_all(frame)
@@ -614,7 +651,7 @@ class DroneNavigator:
         # ── 角度校正：测量 H 偏转 → 无人机旋转对齐 ──
         rotation_applied = 0.0
         if self.h_angle_enabled and h_candidate is not None:
-            angle_frame = self._capture_fresh_frame(settle=2.0, read_time=3.0)
+            angle_frame = self._capture_fresh_frame(read_time=self.servo_read*1.5)
             if angle_frame is not None:
                 if waypoint.rotation:
                     angle_frame = self._rotate_frame(angle_frame, waypoint.rotation)
@@ -627,21 +664,21 @@ class DroneNavigator:
                     if abs(rotation_applied) > 0.5:
                         # 旋转后画面可能偏移，重新伺服一次
                         print(f"[DroneNavigator] {waypoint.name} 旋转校正 {rotation_applied:.1f}°, 重新伺服...")
-                        time.sleep(2)
-                        frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                        time.sleep(self.servo_sleep)
+                        frame = self._capture_fresh_frame()
                         if frame is not None:
                             if waypoint.rotation:
                                 frame = self._rotate_frame(frame, waypoint.rotation)
                             re_det2 = self.detect_all(frame)
                             if re_det2['h_candidate'] is not None:
-                                for _ in range(3):
+                                for _ in range(self.servo_iters):
                                     moved = self._servo_toward_h(
                                         re_det2['h_candidate']['box'],
                                         frame.shape, rotation=waypoint.rotation)
                                     if not moved:
                                         break
-                                    time.sleep(2)
-                                    frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                                    time.sleep(self.servo_sleep)
+                                    frame = self._capture_fresh_frame()
                                     if frame is None:
                                         break
                                     if waypoint.rotation:
@@ -654,7 +691,7 @@ class DroneNavigator:
         final_grade = grade_info
         final_path = image_path
 
-        grade_frame = self._capture_fresh_frame(settle=2.0, read_time=3.0)
+        grade_frame = self._capture_fresh_frame(read_time=self.servo_read*1.5)
         if grade_frame is not None:
             if waypoint.rotation:
                 grade_frame = self._rotate_frame(grade_frame, waypoint.rotation)
@@ -673,22 +710,22 @@ class DroneNavigator:
         if current_z > waypoint.z + 0.01:
             print(f"[DroneNavigator] {waypoint.name} 原地降回 {waypoint.z:.1f}m")
             self.drone.move_to(self.drone.state['x'], self.drone.state['y'], waypoint.z)
-            time.sleep(2)
+            time.sleep(self.servo_sleep)
 
             # 降低后再次检测 H 并伺服
-            down_frame = self._capture_fresh_frame(settle=2.0, read_time=3.0)
+            down_frame = self._capture_fresh_frame(read_time=self.servo_read*1.5)
             if down_frame is not None:
                 if waypoint.rotation:
                     down_frame = self._rotate_frame(down_frame, waypoint.rotation)
                 down_det = self.detect_all(down_frame)
                 if down_det['h_candidate'] is not None:
                     print(f"[DroneNavigator] {waypoint.name} 降低后再次伺服 H")
-                    for _ in range(3):
+                    for _ in range(self.servo_iters):
                         moved = self._servo_toward_h(down_det['h_candidate']['box'], down_frame.shape, rotation=waypoint.rotation)
                         if not moved:
                             break
-                        time.sleep(2)
-                        down_frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                        time.sleep(self.servo_sleep)
+                        down_frame = self._capture_fresh_frame()
                         if down_frame is None:
                             break
                         if waypoint.rotation:
@@ -706,10 +743,10 @@ class DroneNavigator:
             self.drone.rotate_yaw(waypoint.rotate_to)
 
         # 断言当前位置 = 救援点坐标
-        print(f"[DroneNavigator] 断言位置: {waypoint.name}=({waypoint.x:.2f},{waypoint.y:.2f},{waypoint.z:.2f})")
         self.drone.state['x'] = waypoint.x
         self.drone.state['y'] = waypoint.y
         self.drone.state['z'] = waypoint.z
+        print(f"[DroneNavigator] 断言位置: {waypoint.name}=({waypoint.x:.2f},{waypoint.y:.2f},{waypoint.z:.2f})")
 
         return {
             'success': True,
@@ -830,9 +867,17 @@ class DroneNavigator:
         print("[DroneNavigator] 等待起飞完成 & 状态稳定...")
         time.sleep(5)
 
-        # 首次起飞后断言当前位置为 (0, 0, z)
+        # 升到1.5m并断言（确认起飞完成再升，失败则重试）
+        time.sleep(3)
+        for retry in range(3):
+            if self.drone.move_to(0.0, 0.0, 1.5):
+                break
+            print(f"[DroneNavigator] 升至1.5m失败(第{retry+1}次)，重试...")
+            time.sleep(2)
         self.drone.state['x'] = 0.0
         self.drone.state['y'] = 0.0
+        self.drone.state['z'] = 1.5
+        print("[DroneNavigator] 断言原点 at 1.5m")
 
         posture = self.drone.get_posture()
         base_yaw = float(posture.get('yaw', 0.0))
@@ -876,13 +921,13 @@ class DroneNavigator:
         # ── 1. 旋转 180° ──
         print("[DroneNavigator] 装货区: 旋转 180°...")
         self.drone.rotate_yaw(183)
-        time.sleep(2)
+        time.sleep(self.angle_sleep)
 
         # ── 2. 云台朝下，H 检测并伺服 ──
         print(f"[DroneNavigator] 装货区: H 对齐...")
         self._rotate_gimbal_with_recovery(self.loading_area.gimbal_pitch)
         for attempt in range(self.servo_max_attempts):
-            frame = self._capture_fresh_frame(settle=2.0, read_time=3.0)
+            frame = self._capture_fresh_frame(read_time=self.servo_read*1.5)
             if frame is None:
                 continue
             all_detections = self.detect_all(frame)
@@ -893,7 +938,7 @@ class DroneNavigator:
                 while time.time() - t0 < 3.0:
                     self.camera.read()
                 time.sleep(1)
-                confirm = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                confirm = self._capture_fresh_frame()
                 if confirm is not None:
                     confirm_det = self.detect_all(confirm)
                     h_candidate = confirm_det['h_candidate'] if confirm_det['h_candidate'] is not None else None
@@ -904,12 +949,12 @@ class DroneNavigator:
                     ox, oy = self._next_spiral_offset(attempt)
                     self.drone.move_to(la.x + ox, la.y + oy, la.z)
                 continue
-            for servo_iter in range(5):
+            for servo_iter in range(self.servo_iters):
                 moved = self._servo_toward_h(h_candidate['box'], frame.shape)
                 if not moved:
                     break
-                time.sleep(2)
-                frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                time.sleep(self.servo_sleep)
+                frame = self._capture_fresh_frame()
                 if frame is None:
                     break
                 re_h = self.detect_all(frame)['h_candidate']
@@ -920,25 +965,25 @@ class DroneNavigator:
 
         # ── 角度校正：装货区 H ──
         if self.h_angle_enabled and h_candidate is not None:
-            angle_frame = self._capture_fresh_frame(settle=2.0, read_time=3.0)
+            angle_frame = self._capture_fresh_frame(read_time=self.servo_read*1.5)
             if angle_frame is not None:
                 recheck = self.detect_all(angle_frame)
                 if recheck['h_candidate'] is not None:
                     applied = self.correct_h_rotation(
                         angle_frame, recheck['h_candidate']['box'])
                     if abs(applied) > 0.5:
-                        time.sleep(2)
-                        frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                        time.sleep(self.servo_sleep)
+                        frame = self._capture_fresh_frame()
                         if frame is not None:
                             re_det2 = self.detect_all(frame)
                             if re_det2['h_candidate'] is not None:
-                                for _ in range(3):
+                                for _ in range(self.servo_iters):
                                     moved = self._servo_toward_h(
                                         re_det2['h_candidate']['box'], frame.shape)
                                     if not moved:
                                         break
-                                    time.sleep(2)
-                                    frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
+                                    time.sleep(self.servo_sleep)
+                                    frame = self._capture_fresh_frame()
                                     if frame is None:
                                         break
                                     re_det2 = self.detect_all(frame)
@@ -946,39 +991,10 @@ class DroneNavigator:
                                         break
                                 h_candidate = re_det2['h_candidate']
 
-        # ── 5. 原地降至预览高度再次伺服 ──
-        print(f"[DroneNavigator] 装货区: 原地降至 {self.landing_preview_height:.1f}m 再次伺服 H...")
-        self.drone.move_to(self.drone.state['x'], self.drone.state['y'], self.landing_preview_height)
-        time.sleep(2)
-        for attempt in range(3):
-            preview_frame = self._capture_fresh_frame(settle=2.0, read_time=3.0)
-            if preview_frame is None:
-                continue
-            preview_det = self.detect_all(preview_frame)
-            if preview_det['h_candidate'] is not None and self._stream_broken:
-                self._stream_broken = False
-                t0 = time.time()
-                while time.time() - t0 < 3.0:
-                    self.camera.read()
-                time.sleep(1)
-                confirm = self._capture_fresh_frame(settle=2.0, read_time=2.0)
-                if confirm is not None:
-                    confirm_det = self.detect_all(confirm)
-                    preview_det = confirm_det if confirm_det['h_candidate'] is not None else preview_det
-            if preview_det['h_candidate'] is not None:
-                for _ in range(5):
-                    moved = self._servo_toward_h(preview_det['h_candidate']['box'], preview_frame.shape)
-                    if not moved: break
-                    time.sleep(2)
-                    preview_frame = self._capture_fresh_frame(settle=2.0, read_time=2.0)
-                    if preview_frame is None: break
-                    preview_det = self.detect_all(preview_frame)
-                    if preview_det['h_candidate'] is None: break
-                break
+        # [已禁用预降] ── 5. 预览高度伺服（跳过）──
+        # [已禁用预降] ── 6. 角度校正（跳过）──
 
-        # ── 6. 角度校正 → 旋转 → 断言位置 → 前移 → 降落 ──
-        if preview_det and preview_det.get('h_candidate'):
-            self.correct_h_rotation(preview_frame, preview_det['h_candidate']['box'])
+        # ── 5. 旋转 → 断言位置 → 前移 → 降落 ──
         if la.rotate_to and abs(la.rotate_to) > 0.1:
             print(f"[DroneNavigator] 装货区 伺服后机身旋转 {la.rotate_to}°")
             self.drone.rotate_yaw(la.rotate_to)

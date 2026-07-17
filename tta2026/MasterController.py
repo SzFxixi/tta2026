@@ -140,7 +140,7 @@ class MasterController:
         # home 配置
         hp = config.get("home_point", {})
         self.home_point = (float(hp.get("x", 0.7)), float(hp.get("y", 1.3)),
-                           float(hp.get("z", 1.2)))
+                           float(hp.get("z", 1.5)))
         self.home_rotate_yaw = float(hp.get("rotate_yaw", 0.0))
         
         self.landing_offset = float(config.get("landing_offset", 0.04))
@@ -148,86 +148,129 @@ class MasterController:
     
     # ---- 无人机辅助方法（复用 RescueController 的逻辑） ----
     
-    def _servo_h_loop(self, rotation=0.0, max_search=3, max_servo=5, servo_tolerance=0.02):
-        """云台朝下搜索 H 并迭代伺服居中，搜索到后自动角度校正。"""
+    def _save_h_result(self, frame, det, prefix: str):
+        """保存 H 识别结果（原始图像 + YOLO 检测 JSON）到 output。"""
+        import json
+        import cv2
+        img_path = os.path.join(self.output_folder, f'{prefix}_h.jpg')
+        cv2.imwrite(img_path, frame)
+        if det.get('h_candidate'):
+            result = {
+                'h_detected': True,
+                'confidence': det['h_candidate']['confidence'],
+                'box': det['h_candidate']['box'],
+            }
+            json_path = os.path.join(self.output_folder, f'{prefix}_h.json')
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            print(f"[Master] H识别结果已保存: {json_path}")
+
+    def _servo_h_loop(self, rotation=0.0, max_search=3, max_servo=None, servo_tolerance=0.02, save_prefix=None):
+        """云台朝下搜索 H 并迭代伺服居中。
+        找不到 H 时自动拔高 0.2m 重试，再降回原高度。"""
+        if max_servo is None:
+            max_servo = self.drone.servo_iters
         settle_extra = self.drone.servo_settle_extra
-        for _ in range(max_search):
-            frame = self.drone._capture_fresh_frame(settle=3.0 + settle_extra, drain_first=True)
-            if frame is None:
-                continue
-            if abs(rotation) > 0.1:
-                frame = self.drone._rotate_frame(frame, rotation)
-            det = self.drone.detect_all(frame)
-            if det['h_candidate']:
-                self.drone._reset_servo_memory()
-                for __ in range(max_servo):
-                    moved = self.drone._servo_toward_h(det['h_candidate']['box'], frame.shape, rotation=rotation, servo_tolerance=servo_tolerance)
-                    if not moved:
-                        break
-                    time.sleep(2)
-                    frame = self.drone._capture_fresh_frame(settle=2.0 + settle_extra,
-                                                             read_time=2.0, drain_first=True)
-                    if frame is None:
-                        break
-                    if abs(rotation) > 0.1:
-                        frame = self.drone._rotate_frame(frame, rotation)
-                    det = self.drone.detect_all(frame)
-                    if det['h_candidate'] is None:
-                        break
-                # ── 角度校正：伺服后测量 H 偏转并旋转无人机 ──
-                if det['h_candidate'] is not None:
-                    angle_frame = self.drone._capture_fresh_frame(
-                        settle=2.0 + settle_extra, read_time=3.0, drain_first=True)
-                    if angle_frame is not None:
+
+        def _try_servo():
+            for _ in range(max_search):
+                frame = self.drone._capture_fresh_frame(
+                    settle=self.drone.servo_settle*1.5 + settle_extra, drain_first=True)
+                if frame is None:
+                    continue
+                if abs(rotation) > 0.1:
+                    frame = self.drone._rotate_frame(frame, rotation)
+                det = self.drone.detect_all(frame)
+                if det['h_candidate']:
+                    self.drone._reset_servo_memory()
+                    for __ in range(max_servo):
+                        moved = self.drone._servo_toward_h(det['h_candidate']['box'], frame.shape, rotation=rotation, servo_tolerance=servo_tolerance)
+                        if not moved:
+                            break
+                        time.sleep(self.drone.servo_sleep)
+                        frame = self.drone._capture_fresh_frame(settle=self.drone.servo_settle + settle_extra,
+                                                                 read_time=self.drone.servo_read, drain_first=True)
+                        if frame is None:
+                            break
                         if abs(rotation) > 0.1:
-                            angle_frame = self.drone._rotate_frame(angle_frame, rotation)
-                        recheck = self.drone.detect_all(angle_frame)
-                        if recheck['h_candidate'] is not None:
-                            applied = self.drone.correct_h_rotation(
-                                angle_frame, recheck['h_candidate']['box'],
-                                rotation=rotation)
-                            if abs(applied) > 0.5:
-                                print(f"[Master] 旋转校正 {applied:.1f}°, 重新伺服...")
-                                time.sleep(2)
-                                frame = self.drone._capture_fresh_frame(
-                                    settle=2.0 + settle_extra, read_time=2.0, drain_first=True)
-                                if frame is not None:
-                                    if abs(rotation) > 0.1:
-                                        frame = self.drone._rotate_frame(frame, rotation)
-                                    det2 = self.drone.detect_all(frame)
-                                    if det2['h_candidate'] is not None:
-                                        for _ in range(3):
-                                            moved = self.drone._servo_toward_h(
-                                                det2['h_candidate']['box'], frame.shape,
-                                                rotation=rotation)
-                                            if not moved:
-                                                break
-                                            time.sleep(2)
-                                            frame = self.drone._capture_fresh_frame(
-                                                settle=2.0 + settle_extra, read_time=2.0)
-                                            if frame is None:
-                                                break
-                                            if abs(rotation) > 0.1:
-                                                frame = self.drone._rotate_frame(frame, rotation)
-                                            det2 = self.drone.detect_all(frame)
-                                            if det2['h_candidate'] is None:
-                                                break
-                return True
+                            frame = self.drone._rotate_frame(frame, rotation)
+                        det = self.drone.detect_all(frame)
+                        if det['h_candidate'] is None:
+                            break
+                    # ── 角度校正：伺服后测量 H 偏转并旋转无人机 ──
+                    if det['h_candidate'] is not None:
+                        angle_frame = self.drone._capture_fresh_frame(
+                            settle=self.drone.servo_settle + settle_extra, read_time=self.drone.servo_read, drain_first=True)
+                        if angle_frame is not None:
+                            if abs(rotation) > 0.1:
+                                angle_frame = self.drone._rotate_frame(angle_frame, rotation)
+                            recheck = self.drone.detect_all(angle_frame)
+                            if recheck['h_candidate'] is not None:
+                                applied = self.drone.correct_h_rotation(
+                                    angle_frame, recheck['h_candidate']['box'],
+                                    rotation=rotation)
+                                if abs(applied) > 0.5:
+                                    print(f"[Master] 旋转校正 {applied:.1f}°, 重新伺服...")
+                                    time.sleep(self.drone.servo_sleep)
+                                    frame = self.drone._capture_fresh_frame(
+                                        settle=self.drone.servo_settle + settle_extra, read_time=self.drone.servo_read, drain_first=True)
+                                    if frame is not None:
+                                        if abs(rotation) > 0.1:
+                                            frame = self.drone._rotate_frame(frame, rotation)
+                                        det2 = self.drone.detect_all(frame)
+                                        if det2['h_candidate'] is not None:
+                                            for _ in range(self.drone.servo_iters):
+                                                moved = self.drone._servo_toward_h(
+                                                    det2['h_candidate']['box'], frame.shape,
+                                                    rotation=rotation)
+                                                if not moved:
+                                                    break
+                                                time.sleep(self.drone.servo_sleep)
+                                                frame = self.drone._capture_fresh_frame(
+                                                    settle=self.drone.servo_settle + settle_extra, read_time=self.drone.servo_read)
+                                                if frame is None:
+                                                    break
+                                                if abs(rotation) > 0.1:
+                                                    frame = self.drone._rotate_frame(frame, rotation)
+                                                det2 = self.drone.detect_all(frame)
+                                                if det2['h_candidate'] is None:
+                                                    break
+                    if save_prefix and det.get('h_candidate'):
+                        self._save_h_result(frame, det, save_prefix)
+                    return True
+            return False
+
+        # 第一次尝试
+        if _try_servo():
+            return True
+
+        # 持续升高直到找到 H 或达到上限
+        original_z = self.drone.drone.state['z']
+        max_z = self.drone.h_search_max_height
+        step = self.drone.h_search_step_height
+        current_z = original_z + step
+        while current_z <= max_z:
+            print(f"[Master] 升高至 {current_z:.1f}m 搜索H...")
+            self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], current_z)
+            if _try_servo():
+                print(f"[Master] 降回 {original_z:.1f}m")
+                self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], original_z)
+                self.drone.drone.state['z'] = original_z
+                time.sleep(self.drone.servo_sleep)
+                self.drone._capture_fresh_frame(settle=self.drone.servo_settle, drain_first=True)
+                if _try_servo():
+                    return True
+            current_z += step
+
+        print(f"[Master] 升至 {max_z:.1f}m 仍未找到H，降回 {original_z:.1f}m")
+        self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], original_z)
+        self.drone.drone.state['z'] = original_z
         return False
     
     def _servo_and_land(self, rotation=0.0):
-        """标准降落：反复找 H 并伺服居中（预览高度用更严格tolerance）→ 降回原高 → 前移 → 降落"""
+        """标准降落：找 H 伺服 → 前移 → 降落"""
         self.drone._rotate_gimbal_with_recovery(-90)
-        original_z = self.drone.drone.state['z']
-        for attempt in range(5):
-            if self._servo_h_loop(rotation=rotation, servo_tolerance=self.drone.servo_tolerance_preview):
-                break
-            print(f"[Master] 第{attempt+1}次未找到H，升高重试...")
-            self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'],
-                               self.drone.drone.state['z'] + 0.2)
-        if self.drone.drone.state['z'] > original_z + 0.01:
-            print(f"[Master] 降回 {original_z:.1f}m")
-            self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], original_z)
+        self._servo_h_loop(rotation=rotation, servo_tolerance=self.drone.servo_tolerance_preview)
         print(f"[Master] 前移 {self.landing_offset:.2f}m 后降落")
         self.drone.move_to(self.drone.drone.state['x'] + self.landing_offset,
                            self.drone.drone.state['y'],
@@ -289,7 +332,7 @@ class MasterController:
         self.drone.move_to(hx, hy, hz)
         print("[Master] home H 伺服对齐...")
         self.drone._rotate_gimbal_with_recovery(-90)
-        self._servo_h_loop()
+        self._servo_h_loop(save_prefix="home")
         self.drone.move_to(self.drone.drone.state['x'] + self.landing_offset,
                            self.drone.drone.state['y'],
                            self.drone.drone.state['z'])
@@ -363,6 +406,13 @@ class MasterController:
             self._update_rescue_results(results)
             self._write_csv()
             saved_loading = dict(self.drone.drone.state)
+
+            # 断言自身位置在装货区
+            la = self.drone.loading_area
+            print(f"[Master] 断言位置: 装货区=({la.x:.2f},{la.y:.2f},{la.z:.2f})")
+            self.drone.drone.state['x'] = la.x
+            self.drone.drone.state['y'] = la.y
+            self.drone.drone.state['z'] = la.z
             
             target_name = self._select_target_waypoint(results)
             if target_name is None:
@@ -402,11 +452,13 @@ class MasterController:
                 print("[Master] 装货区起飞失败")
                 return False
             time.sleep(6)
+            self.drone.drone.state['z'] = 1.2  # 起飞后实际高度, 确保move_to抬升0.3m
+            self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], 1.5)
             self.drone.drone.state['x'] = saved_loading['x']
             self.drone.drone.state['y'] = saved_loading['y']
             
             # 后退（撤销降落前移）
-            back = -2 * self.landing_offset
+            back = -float(self.config.get("back_offset", 0.09))
             print(f"[Master] 后退 {back:.2f}m")
             self.drone.move_to(self.drone.drone.state['x'] + back,
                                self.drone.drone.state['y'],
@@ -427,20 +479,27 @@ class MasterController:
             # H 伺服
             print("[Master] 目标点 H 伺服...")
             self.drone._rotate_gimbal_with_recovery(-90)
-            self._servo_h_loop(rotation=target_waypoint.rotation)
+            self._servo_h_loop(rotation=target_waypoint.rotation, save_prefix="rescue")
 
+            # 旋转无人机朝向（不加伺服，前面已居中）
             if abs(rot) > 0.1:
                 print(f"[Master] 旋转 {rot}°")
                 self.drone.rotate_yaw(rot)
-                time.sleep(2)
+                time.sleep(self.drone.servo_sleep)
                 self._servo_h_loop()
-            
-            # 预降后再伺服 → 降落
-            print(f"[Master] 预降至 {self.preview_h:.1f}m")
-            self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], self.preview_h)
-            time.sleep(2)
-            print("[Master] 无人机降落救援区平台...")
-            landing_state = self._servo_and_land()
+
+            # [已禁用预降] 旋转对齐后直接前移+降落
+            # print(f"[Master] 预降至 {self.preview_h:.1f}m")
+            # self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], self.preview_h)
+            # time.sleep(2)
+            print("[Master] 旋转对齐后直接降落...")
+            self.drone.move_to(self.drone.drone.state['x'] + self.landing_offset,
+                               self.drone.drone.state['y'],
+                               self.drone.drone.state['z'])
+            self.drone._rotate_gimbal_with_recovery(0)
+            landing_state = dict(self.drone.drone.state)
+            self.drone.land()
+            time.sleep(17)
 
             # 断言目标点位置
             print(f"[Master] 断言位置: {target_name}=({target_waypoint.x:.2f},{target_waypoint.y:.2f},{target_waypoint.z:.2f})")
@@ -452,6 +511,11 @@ class MasterController:
             rescue_point_num = int(target_name.replace("救援点", ""))
             print(f"[Master] 无人机已降落，触发小车前往救援点{rescue_point_num}")
             self.car.start_rescue(rescue_point_num)
+
+            # 等待小车完成救援区放置
+            print("[Master] 等待小车完成救援区放置...")
+            self.car.wait_idle()
+            print("[Master] 小车救援区放置完成")
             
             # ============ 阶段 5：地面放置 ============
             print("\n" + "=" * 60)
@@ -482,6 +546,8 @@ class MasterController:
                 print("[Master] 救援点起飞失败")
                 return False
             time.sleep(6)
+            self.drone.drone.state['z'] = 1.2  # 起飞后实际高度, 确保move_to抬升0.3m
+            self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], 1.5)
             self.drone.drone.state['x'] = landing_state['x']
             self.drone.drone.state['y'] = landing_state['y']
             
@@ -493,7 +559,7 @@ class MasterController:
             hx, hy, hz = self.home_point
             self.drone.move_to(hx, hy, hz)
             self.drone._rotate_gimbal_with_recovery(-90)
-            self._servo_h_loop()
+            self._servo_h_loop(save_prefix="home")
             self.drone.move_to(self.drone.drone.state['x'] + self.landing_offset,
                                self.drone.drone.state['y'],
                                self.drone.drone.state['z'])
@@ -503,7 +569,8 @@ class MasterController:
             self.drone.drone.state['z'] = hz
 
             print("[Master] home点 H对齐降落...")
-            self._servo_and_land()
+            self.drone.land()
+            time.sleep(17)
             
             # 等待小车返航完成
             print("[Master] 等待小车返航...")

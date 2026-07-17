@@ -33,7 +33,7 @@ class RescueController:
         # 原点（home）配置
         hp = config.get("home_point", {})
         self.home_point = (float(hp.get("x", 0.7)), float(hp.get("y", 1.3)),
-                           float(hp.get("z", 1.2)))
+                           float(hp.get("z", 1.5)))
         self.home_rotate_yaw = float(hp.get("rotate_yaw", 0.0))
 
     def execute_scan_mission(self) -> bool:
@@ -64,88 +64,158 @@ class RescueController:
         print(f"[RescueController] 巡检{'全部完成' if all_ok else '部分完成'} — {self.rescue_points.summary()}")
         return all_ok
 
-    def _servo_h_loop(self, rotation: float = 0.0, max_search: int = 3, max_servo: int = 5,
-                      servo_tolerance: float = 0.02):
+    def _save_h_result(self, frame, det, prefix: str):
+        """保存 H 识别结果（原始图像 + YOLO 检测 JSON）到 output。"""
+        import json
+        import cv2
+        img_path = os.path.join(self.output_folder, f'{prefix}_h.jpg')
+        cv2.imwrite(img_path, frame)
+        if det.get('h_candidate'):
+            result = {
+                'h_detected': True,
+                'confidence': det['h_candidate']['confidence'],
+                'box': det['h_candidate']['box'],
+            }
+            json_path = os.path.join(self.output_folder, f'{prefix}_h.json')
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            print(f"[RescueController] H识别结果已保存: {json_path}")
+
+    def _servo_h_loop(self, rotation: float = 0.0, max_search: int = 3, max_servo: int = None,
+                      servo_tolerance: float = 0.02, save_prefix: str = None):
         """内部辅助：云台朝下搜索 H 并迭代伺服居中。
-        rotation: 不为0时传给 _servo_toward_h 修正坐标系方向。"""
-        for _ in range(max_search):
-            frame = self.drone._capture_fresh_frame(settle=3.0, drain_first=True)
-            if frame is None: continue
-            det = self.drone.detect_all(frame)
-            if det['h_candidate']:
-                if self.drone._stream_broken:
-                    print("[RescueController] 断流后首帧有H，冲洗确认...")
-                    self.drone._stream_broken = False
-                    t0 = time.time()
-                    while time.time() - t0 < 3.0:
-                        self.drone.camera.read()
-                    time.sleep(1)
-                    confirm = self.drone._capture_fresh_frame(settle=2.0, read_time=2.0, drain_first=True)
-                    if confirm is not None:
-                        recheck = self.drone.detect_all(confirm)
-                        if recheck['h_candidate'] is not None:
-                            det = recheck
+        找不到 H 时自动拔高 0.2m 重试，再降回原高度。"""
+        if max_servo is None:
+            max_servo = self.drone.servo_iters
+        settle_extra = self.drone.servo_settle_extra
+
+        def _try_servo():
+            for _ in range(max_search):
+                frame = self.drone._capture_fresh_frame(
+                    settle=self.drone.servo_settle*1.5 + settle_extra, drain_first=True)
+                if frame is None: continue
+                if abs(rotation) > 0.1:
+                    frame = self.drone._rotate_frame(frame, rotation)
+                det = self.drone.detect_all(frame)
+                if det['h_candidate']:
+                    if self.drone._stream_broken:
+                        print("[RescueController] 断流后首帧有H，冲洗确认...")
+                        self.drone._stream_broken = False
+                        t0 = time.time()
+                        while time.time() - t0 < 3.0:
+                            self.drone.camera.read()
+                        time.sleep(1)
+                        confirm = self.drone._capture_fresh_frame(settle=self.drone.servo_settle + settle_extra, read_time=self.drone.servo_read, drain_first=True)
+                        if confirm is not None:
+                            if abs(rotation) > 0.1:
+                                confirm = self.drone._rotate_frame(confirm, rotation)
+                            recheck = self.drone.detect_all(confirm)
+                            if recheck['h_candidate'] is not None:
+                                det = recheck
+                                frame = confirm
+                            else:
+                                continue
                         else:
                             continue
-                    else:
-                        continue
-                for __ in range(max_servo):
-                    moved = self.drone._servo_toward_h(det['h_candidate']['box'], frame.shape,
-                                                       rotation=rotation, servo_tolerance=servo_tolerance)
-                    if not moved: break
-                    time.sleep(2)
-                    frame = self.drone._capture_fresh_frame(settle=2.0, read_time=2.0, drain_first=True)
-                    if frame is None: break
-                    det = self.drone.detect_all(frame)
-                    if det['h_candidate'] is None: break
-                # 伺服后若 H 丢了，补搜一次
-                if det['h_candidate'] is None:
-                    recover = self.drone._capture_fresh_frame(settle=2.0, read_time=2.0, drain_first=True)
-                    if recover is not None:
+                    self.drone._reset_servo_memory()
+                    for __ in range(max_servo):
+                        moved = self.drone._servo_toward_h(det['h_candidate']['box'], frame.shape,
+                                                           rotation=rotation, servo_tolerance=servo_tolerance)
+                        if not moved: break
+                        time.sleep(self.drone.servo_sleep)
+                        frame = self.drone._capture_fresh_frame(settle=self.drone.servo_settle + settle_extra,
+                                                                 read_time=self.drone.servo_read, drain_first=True)
+                        if frame is None: break
                         if abs(rotation) > 0.1:
-                            recover = self.drone._rotate_frame(recover, rotation)
-                        det = self.drone.detect_all(recover)
-                        if det['h_candidate'] is not None:
-                            frame = recover
-                # 角度校正
-                if det['h_candidate'] is not None:
-                    applied = self.drone.correct_h_rotation(frame, det['h_candidate']['box'], rotation=rotation)
-                    if abs(applied) > 0.5:
-                        print(f"[RescueController] 旋转校正 {applied:.1f}°, 重新伺服...")
-                        time.sleep(2)
-                        re_frame = self.drone._capture_fresh_frame(settle=2.0, read_time=2.0,
-                                                                     drain_first=True)
-                        if re_frame is not None:
+                            frame = self.drone._rotate_frame(frame, rotation)
+                        det = self.drone.detect_all(frame)
+                        if det['h_candidate'] is None: break
+                    # 伺服后若 H 丢了，补搜一次
+                    if det['h_candidate'] is None:
+                        recover = self.drone._capture_fresh_frame(settle=self.drone.servo_settle + settle_extra,
+                                                                   read_time=self.drone.servo_read, drain_first=True)
+                        if recover is not None:
                             if abs(rotation) > 0.1:
-                                re_frame = self.drone._rotate_frame(re_frame, rotation)
-                            re_det = self.drone.detect_all(re_frame)
-                            if re_det['h_candidate'] is not None:
-                                for _ in range(3):
-                                    moved = self.drone._servo_toward_h(
-                                        re_det['h_candidate']['box'], re_frame.shape,
-                                        rotation=rotation, servo_tolerance=servo_tolerance)
-                                    if not moved:
-                                        break
-                            self.drone.correct_h_rotation(re_frame, re_det["h_candidate"]["box"],
-                                                              rotation=rotation)
-                return True
+                                recover = self.drone._rotate_frame(recover, rotation)
+                            det = self.drone.detect_all(recover)
+                            if det['h_candidate'] is not None:
+                                frame = recover
+                    # 角度校正：捕获新帧检测H偏转
+                    if det['h_candidate'] is not None:
+                        angle_frame = self.drone._capture_fresh_frame(
+                            settle=self.drone.servo_settle + settle_extra, read_time=self.drone.servo_read, drain_first=True)
+                        if angle_frame is not None:
+                            if abs(rotation) > 0.1:
+                                angle_frame = self.drone._rotate_frame(angle_frame, rotation)
+                            recheck = self.drone.detect_all(angle_frame)
+                            if recheck['h_candidate'] is not None:
+                                applied = self.drone.correct_h_rotation(
+                                    angle_frame, recheck['h_candidate']['box'],
+                                    rotation=rotation)
+                                if abs(applied) > 0.5:
+                                    print(f"[RescueController] 旋转校正 {applied:.1f}°, 重新伺服...")
+                                    time.sleep(self.drone.servo_sleep)
+                                    re_frame = self.drone._capture_fresh_frame(
+                                        settle=self.drone.servo_settle + settle_extra, read_time=self.drone.servo_read, drain_first=True)
+                                    if re_frame is not None:
+                                        if abs(rotation) > 0.1:
+                                            re_frame = self.drone._rotate_frame(re_frame, rotation)
+                                        re_det = self.drone.detect_all(re_frame)
+                                        if re_det['h_candidate'] is not None:
+                                            for _ in range(self.drone.servo_iters):
+                                                moved = self.drone._servo_toward_h(
+                                                    re_det['h_candidate']['box'], re_frame.shape,
+                                                    rotation=rotation)
+                                                if not moved:
+                                                    break
+                                                time.sleep(self.drone.servo_sleep)
+                                                re_frame = self.drone._capture_fresh_frame(
+                                                    settle=self.drone.servo_settle + settle_extra,
+                                                    read_time=self.drone.servo_read)
+                                                if re_frame is None:
+                                                    break
+                                                if abs(rotation) > 0.1:
+                                                    re_frame = self.drone._rotate_frame(re_frame, rotation)
+                                                re_det = self.drone.detect_all(re_frame)
+                                                if re_det['h_candidate'] is None:
+                                                    break
+                    if save_prefix and det.get('h_candidate'):
+                        self._save_h_result(frame, det, save_prefix)
+                    return True
+            return False
+
+        # 第一次尝试
+        if _try_servo():
+            return True
+
+        # 持续升高直到找到 H 或达到上限
+        original_z = self.drone.drone.state['z']
+        max_z = self.drone.h_search_max_height
+        step = self.drone.h_search_step_height
+        current_z = original_z + step
+        while current_z <= max_z:
+            print(f"[RescueController] 升高至 {current_z:.1f}m 搜索H...")
+            self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], current_z)
+            if _try_servo():
+                print(f"[RescueController] 降回 {original_z:.1f}m")
+                self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], original_z)
+                self.drone.drone.state['z'] = original_z
+                # 降回原高度后再次伺服
+                time.sleep(self.drone.servo_sleep)
+                self.drone._capture_fresh_frame(settle=self.drone.servo_settle, drain_first=True)  # 冲洗旧帧
+                if _try_servo():
+                    return True
+            current_z += step
+
+        print(f"[RescueController] 升至 {max_z:.1f}m 仍未找到H，降回 {original_z:.1f}m")
+        self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], original_z)
+        self.drone.drone.state['z'] = original_z
         return False
 
     def _servo_and_land(self, rotation: float = 0.0):
-        """标准降落：反复找 H 并伺服居中（预览高度用更严格 tolerance）→ 降回原高 → 前移 → 降落。
-        返回降落时的 state（用于后续起飞校准坐标）。"""
+        """标准降落：找 H 伺服 → 前移 → 降落。"""
         self.drone._rotate_gimbal_with_recovery(-90)
-        original_z = self.drone.drone.state['z']
-        for attempt in range(5):
-            if self._servo_h_loop(rotation=rotation, servo_tolerance=self.drone.servo_tolerance_preview):
-                break
-            print(f"[RescueController] 第{attempt+1}次未找到H，升高重试...")
-            self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'],
-                               self.drone.drone.state['z'] + 0.2)
-        # 降回原高度
-        if self.drone.drone.state['z'] > original_z + 0.01:
-            print(f"[RescueController] 降回 {original_z:.1f}m")
-            self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], original_z)
+        self._servo_h_loop(rotation=rotation, servo_tolerance=self.drone.servo_tolerance_preview)
         offset = float(self.config.get('landing_offset', 0.04))
         print(f"[RescueController] 前移 {offset:.2f}m 后降落")
         self.drone.move_to(self.drone.drone.state['x'] + offset, self.drone.drone.state['y'], self.drone.drone.state['z'])
@@ -158,7 +228,7 @@ class RescueController:
     def execute_drone_full_test(self) -> bool:
         """无人机全流程测试（无小车）：
         巡检4点 → 装货区降落(180°) → 起飞回原点 → 飞目标点 →
-        伺服 → 旋转(rotation) → 再伺服 → 预降至(landing_preview_height) → 伺服 → 降落 →
+        伺服 → 旋转(rotation) → 预降至(landing_preview_height) → 伺服 → 降落 →
         起飞 → 旋转(-rotation) → 回原点 → 伺服 → 降落。"""
         import time
         print("[RescueController] ====== 无人机全流程测试 ======")
@@ -168,12 +238,20 @@ class RescueController:
         self._write_csv()
         time.sleep(16)  # 装货区降落后等稳定
 
+        # 断言自身位置在装货区
+        la = self.drone.loading_area
+        saved_loading = dict(self.drone.drone.state)
+        print(f"[RescueController] 断言位置: 装货区=({la.x:.2f},{la.y:.2f},{la.z:.2f})")
+        self.drone.drone.state['x'] = la.x
+        self.drone.drone.state['y'] = la.y
+        self.drone.drone.state['z'] = la.z
+
         target_name = self._select_target_waypoint(results) or next(iter(results.keys()), None)
         if target_name is None:
             return False
         target_waypoint = self._find_waypoint(target_name)
         rot = target_waypoint.rotation + target_waypoint.rotation_offset
-        return_altitude = float(self.config.get('return_altitude', 1.2))
+        return_altitude = float(self.config.get('return_altitude', 1.5))
         preview_h = float(self.config.get('landing_preview_height', 0.8))
         print(f"[RescueController] 目标: {target_name}, rotation={rot}°")
 
@@ -184,9 +262,18 @@ class RescueController:
             print("[RescueController] 装货区起飞失败")
             return False
         time.sleep(6)
+        # 起飞后实际高度约1.2m，重置state.z确保move_to计算正确的抬升量
+        self.drone.drone.state['z'] = 1.2
+        for _ in range(3):
+            if self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], 1.5):
+                break
+            print("[RescueController] 升至1.5m失败, 重试...")
+            time.sleep(2)
+        self.drone.drone.state['x'] = saved_loading['x']
+        self.drone.drone.state['y'] = saved_loading['y']
 
         # 1. 先后退 2×landing_offset（撤销降落时的前移）
-        back = -2 * float(self.config.get('landing_offset', 0.04))
+        back = -float(self.config.get('back_offset', 0.09))
         print(f"[RescueController] 先后退 {back:.2f}m")
         self.drone.move_to(self.drone.drone.state['x'] + back,
                            self.drone.drone.state['y'],
@@ -208,7 +295,7 @@ class RescueController:
             return False
         print("[RescueController] home H 伺服对齐...")
         self.drone._rotate_gimbal_with_recovery(-90)
-        self._servo_h_loop()
+        self._servo_h_loop(save_prefix="home")
 
         # 对齐 H 后前移 landing_offset
         offset = float(self.config.get('landing_offset', 0.04))
@@ -224,30 +311,40 @@ class RescueController:
         self.drone.drone.state['y'] = 0.0
         self.drone.drone.state['z'] = hz
 
-        # ---- 飞目标点 → 伺服 → 旋转 → 再伺服 → 预降 → 伺服 → 降落 ----
+        # ---- 飞目标点 → 伺服 → 旋转 → 预降 → 伺服 → 降落 ----
         print(f"[RescueController] --- 飞目标点 {target_name} ---")
         self.drone.move_to(target_waypoint.x, target_waypoint.y, target_waypoint.z)
         self.drone._rotate_gimbal_with_recovery(-90)
-        self._servo_h_loop(rotation=target_waypoint.rotation)
-
+        self._servo_h_loop(rotation=target_waypoint.rotation, save_prefix="rescue")
         if abs(rot) > 0.1:
             print(f"[RescueController] 旋转 {rot}°")
             self.drone.rotate_yaw(rot)
-            time.sleep(2)
-            self._servo_h_loop()  # 旋转后伺服，不传 rotation
+            time.sleep(self.drone.servo_sleep)
+            self._servo_h_loop()
 
-        # 预降后伺服
-        print(f"[RescueController] 预降至 {preview_h:.1f}m")
-        self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], preview_h)
-        time.sleep(2)
-        landing_state = self._servo_and_land()
-        time.sleep(2)
+        # [已禁用预降] print(f"[RescueController] 预降至 {preview_h:.1f}m")
+        # [已禁用预降] self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], preview_h)
+        # [已禁用预降] time.sleep(2)
+        # 旋转对齐后伺服+前移+降落
+        offset = float(self.config.get('landing_offset', 0.04))
+        self.drone.move_to(self.drone.drone.state['x'] + offset, self.drone.drone.state['y'], self.drone.drone.state['z'])
+        self.drone._rotate_gimbal_with_recovery(0)
+        landing_state = dict(self.drone.drone.state)
+        self.drone.land()
+        time.sleep(17)
 
         # ---- 起飞 → 旋转 -rotation → 飞home → 伺服 → 降落 ----
         print("[RescueController] --- 起飞返航 ---")
         self.drone.reset(); time.sleep(1)
         self.drone.takeoff()
         time.sleep(6)
+        # 起飞后实际高度约1.2m，重置state.z确保move_to计算正确的抬升量
+        self.drone.drone.state['z'] = 1.2
+        for _ in range(3):
+            if self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], 1.5):
+                break
+            print("[RescueController] 升至1.5m失败, 重试...")
+            time.sleep(2)
         self.drone.drone.state['x'] = landing_state['x']
         self.drone.drone.state['y'] = landing_state['y']
         if abs(rot) > 0.1:
@@ -260,7 +357,7 @@ class RescueController:
         self.drone.move_to(hx, hy, hz)
         print("[RescueController] home H 伺服对齐...")
         self.drone._rotate_gimbal_with_recovery(-90)
-        self._servo_h_loop()
+        self._servo_h_loop(save_prefix="home")
         self.drone.move_to(self.drone.drone.state['x'] + float(self.config.get('landing_offset', 0.04)),
                            self.drone.drone.state['y'],
                            self.drone.drone.state['z'])
@@ -270,10 +367,141 @@ class RescueController:
         self.drone.drone.state['y'] = 0.0
         self.drone.drone.state['z'] = hz
 
-        print("[RescueController] --- home点 H对齐降落 ---")
-        self._servo_and_land()
+        print("[RescueController] --- home点 降落 ---")
+        self.drone.land()
+        time.sleep(17)
 
-        print("[RescueController] ====== 全流程测试完成 ======")
+        print("[RescueController] ====== 全流程测试完成 =====")
+        return True
+
+    def execute_half_mission(self, target_name: str) -> bool:
+        """后半程测试（从装货区起飞开始）。
+        参数 target_name 如 \"救援点1\"。"""
+        import time
+        print(f"[RescueController] ====== 后半程测试 → {target_name} ======")
+
+        target_waypoint = self._find_waypoint(target_name)
+        if target_waypoint is None:
+            print(f"[RescueController] 未找到航点: {target_name}")
+            return False
+
+        rot = target_waypoint.rotation + target_waypoint.rotation_offset
+        return_altitude = float(self.config.get('return_altitude', 1.5))
+        preview_h = float(self.config.get('landing_preview_height', 0.8))
+
+        # 断言自身位置在装货区
+        la = self.drone.loading_area
+        print(f"[RescueController] 断言位置: 装货区=({la.x:.2f},{la.y:.2f},{la.z:.2f})")
+        self.drone.drone.state['x'] = la.x
+        self.drone.drone.state['y'] = la.y
+        self.drone.drone.state['z'] = la.z
+
+        # ---- 起飞回原点 ----
+        print("[RescueController] --- 起飞回原点 ---")
+        self.drone.reset(); time.sleep(1)
+        if not self.drone.takeoff():
+            print("[RescueController] 装货区起飞失败")
+            return False
+        time.sleep(6)
+        # 起飞后实际高度约1.2m，重置state.z确保move_to计算正确的抬升量
+        self.drone.drone.state['z'] = 1.2
+        for _ in range(3):
+            if self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], 1.5):
+                break
+            print("[RescueController] 升至1.5m失败, 重试...")
+            time.sleep(2)
+        self.drone.drone.state['x'] = la.x
+        self.drone.drone.state['y'] = la.y
+
+        back = -float(self.config.get('back_offset', 0.09))
+        print(f"[RescueController] 先后退 {back:.2f}m")
+        self.drone.move_to(self.drone.drone.state['x'] + back,
+                           self.drone.drone.state['y'],
+                           self.drone.drone.state['z'])
+
+        if not self.drone.rotate_yaw(180):
+            print("[RescueController] 旋转180° 失败")
+            return False
+        if abs(self.home_rotate_yaw) > 0.1:
+            self.drone.rotate_yaw(self.home_rotate_yaw)
+
+        hx, hy, hz = self.home_point
+        print(f"[RescueController] 飞往 home ({hx}, {hy}, {hz})...")
+        if not self.drone.move_to(hx, hy, hz):
+            return False
+        print("[RescueController] home H 伺服对齐...")
+        self.drone._rotate_gimbal_with_recovery(-90)
+        self._servo_h_loop(save_prefix="home")
+        offset = float(self.config.get('landing_offset', 0.04))
+        print(f"[RescueController] 前移 {offset:.2f}m")
+        self.drone.move_to(self.drone.drone.state['x'] + offset,
+                           self.drone.drone.state['y'],
+                           self.drone.drone.state['z'])
+        self.drone._rotate_gimbal_with_recovery(0)
+        print(f"[RescueController] 断言原点 (0, 0, {hz})")
+        self.drone.drone.state['x'] = 0.0
+        self.drone.drone.state['y'] = 0.0
+        self.drone.drone.state['z'] = hz
+
+        # ---- 飞目标点 ----
+        print(f"[RescueController] --- 飞目标点 {target_name} ---")
+        self.drone.move_to(target_waypoint.x, target_waypoint.y, target_waypoint.z)
+        self.drone._rotate_gimbal_with_recovery(-90)
+        self._servo_h_loop(rotation=target_waypoint.rotation, save_prefix="rescue")
+
+        if abs(rot) > 0.1:
+            print(f"[RescueController] 旋转 {rot}°")
+            self.drone.rotate_yaw(rot)
+            time.sleep(self.drone.servo_sleep)
+            self._servo_h_loop()
+
+        # [已禁用预降] print(f"[RescueController] 预降至 {preview_h:.1f}m")
+        # [已禁用预降] self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], preview_h)
+        # [已禁用预降] time.sleep(2)
+        offset = float(self.config.get('landing_offset', 0.04))
+        self.drone.move_to(self.drone.drone.state['x'] + offset, self.drone.drone.state['y'], self.drone.drone.state['z'])
+        self.drone._rotate_gimbal_with_recovery(0)
+        landing_state = dict(self.drone.drone.state)
+        self.drone.land()
+        time.sleep(17)
+
+        # ---- 返航 ----
+        print("[RescueController] --- 起飞返航 ---")
+        self.drone.reset(); time.sleep(1)
+        self.drone.takeoff()
+        time.sleep(6)
+        # 起飞后实际高度约1.2m，重置state.z确保move_to计算正确的抬升量
+        self.drone.drone.state['z'] = 1.2
+        for _ in range(3):
+            if self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], 1.5):
+                break
+            print("[RescueController] 升至1.5m失败, 重试...")
+            time.sleep(2)
+        self.drone.drone.state['x'] = landing_state['x']
+        self.drone.drone.state['y'] = landing_state['y']
+        if abs(rot) > 0.1:
+            print(f"[RescueController] 旋转 -{rot}° 恢复朝向")
+            self.drone.rotate_yaw(-rot)
+
+        hx, hy, hz = self.home_point
+        print(f"[RescueController] 飞往 home ({hx}, {hy}, {hz})...")
+        self.drone.move_to(hx, hy, hz)
+        self.drone._rotate_gimbal_with_recovery(-90)
+        self._servo_h_loop(save_prefix="home")
+        self.drone.move_to(self.drone.drone.state['x'] + float(self.config.get('landing_offset', 0.04)),
+                           self.drone.drone.state['y'],
+                           self.drone.drone.state['z'])
+        self.drone._rotate_gimbal_with_recovery(0)
+        print(f"[RescueController] 断言原点 (0, 0, {hz})")
+        self.drone.drone.state['x'] = 0.0
+        self.drone.drone.state['y'] = 0.0
+        self.drone.drone.state['z'] = hz
+
+        print("[RescueController] --- home点 降落 ---")
+        self.drone.land()
+        time.sleep(17)
+
+        print("[RescueController] ====== 后半程测试完成 =====")
         return True
 
     def execute_delivery_mission(self) -> bool:
@@ -290,6 +518,13 @@ class RescueController:
         saved_loading = dict(self.drone.drone.state)  # 保存装货区降落前坐标
         time.sleep(17)  # 装货区降落后等稳定
         # scan_waypoints 末尾已在装货区旋转 180° 并降落
+
+        # 断言自身位置在装货区
+        la = self.drone.loading_area
+        print(f"[RescueController] 断言位置: 装货区=({la.x:.2f},{la.y:.2f},{la.z:.2f})")
+        self.drone.drone.state['x'] = la.x
+        self.drone.drone.state['y'] = la.y
+        self.drone.drone.state['z'] = la.z
 
         target_name = self._select_target_waypoint(results)
         if target_name is None:
@@ -325,11 +560,18 @@ class RescueController:
         if not self.drone.takeoff():
             return False
         time.sleep(6)
+        # 起飞后实际高度约1.2m，重置state.z确保move_to计算正确的抬升量
+        self.drone.drone.state['z'] = 1.2
+        for _ in range(3):
+            if self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], 1.5):
+                break
+            print("[RescueController] 升至1.5m失败, 重试...")
+            time.sleep(2)
         self.drone.drone.state['x'] = saved_loading['x']
         self.drone.drone.state['y'] = saved_loading['y']
 
         # 1. 先后退 2×landing_offset
-        back = -2 * float(self.config.get('landing_offset', 0.04))
+        back = -float(self.config.get('back_offset', 0.09))
         print(f"[RescueController] 先后退 {back:.2f}m")
         self.drone.move_to(self.drone.drone.state['x'] + back,
                            self.drone.drone.state['y'],
@@ -344,13 +586,13 @@ class RescueController:
 
         # 3. 飞往 home_point 并 H 伺服对齐，断言原点
         hx, hy, hz = self.home_point
-        return_altitude = float(self.config.get('return_altitude', 1.2))
+        return_altitude = float(self.config.get('return_altitude', 1.5))
         print(f"[RescueController] 飞往 home ({hx}, {hy}, {hz})...")
         if not self.drone.move_to(hx, hy, hz):
             return False
         print("[RescueController] home H 伺服对齐...")
         self.drone._rotate_gimbal_with_recovery(-90)
-        self._servo_h_loop()
+        self._servo_h_loop(save_prefix="home")
         offset = float(self.config.get('landing_offset', 0.04))
         print(f"[RescueController] 前移 {offset:.2f}m")
         self.drone.move_to(self.drone.drone.state['x'] + offset,
@@ -372,21 +614,26 @@ class RescueController:
         if not self.drone.move_to(target_waypoint.x, target_waypoint.y, target_waypoint.z):
             return False
 
-        # 目标点: 伺服 → 旋转 → 再伺服 → 预降 → 伺服 → 降落
+        # 目标点: 伺服 → 旋转 → 预降 → 伺服 → 降落
         print("[RescueController] 目标点 H 对齐...")
         self.drone._rotate_gimbal_with_recovery(-90)
-        self._servo_h_loop(rotation=target_waypoint.rotation)
+        self._servo_h_loop(rotation=target_waypoint.rotation, save_prefix="rescue")
 
         if abs(rot) > 0.1:
             print(f"[RescueController] 旋转 {rot}°")
             self.drone.rotate_yaw(rot)
-            time.sleep(2)
+            time.sleep(self.drone.servo_sleep)
             self._servo_h_loop()
 
-        print(f"[RescueController] 预降至 {preview_h:.1f}m")
-        self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], preview_h)
-        time.sleep(2)
-        landing_state = self._servo_and_land()
+        # [已禁用预降] print(f"[RescueController] 预降至 {preview_h:.1f}m")
+        # [已禁用预降] self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], preview_h)
+        # [已禁用预降] time.sleep(2)
+        offset = float(self.config.get('landing_offset', 0.04))
+        self.drone.move_to(self.drone.drone.state['x'] + offset, self.drone.drone.state['y'], self.drone.drone.state['z'])
+        self.drone._rotate_gimbal_with_recovery(0)
+        landing_state = dict(self.drone.drone.state)
+        self.drone.land()
+        time.sleep(17)
 
         # ==================== 阶段 4：地面物资放置 ====================
         print("[RescueController] --- 阶段 4: 小车放置物资 ---")
@@ -413,6 +660,13 @@ class RescueController:
         if not self.drone.takeoff():
             return False
         time.sleep(6)
+        # 起飞后实际高度约1.2m，重置state.z确保move_to计算正确的抬升量
+        self.drone.drone.state['z'] = 1.2
+        for _ in range(3):
+            if self.drone.move_to(self.drone.drone.state['x'], self.drone.drone.state['y'], 1.5):
+                break
+            print("[RescueController] 升至1.5m失败, 重试...")
+            time.sleep(2)
         self.drone.drone.state['x'] = landing_state['x']
         self.drone.drone.state['y'] = landing_state['y']
         if abs(rot) > 0.1:
@@ -425,7 +679,7 @@ class RescueController:
         self.drone.move_to(hx, hy, hz)
         print("[RescueController] home H 伺服对齐...")
         self.drone._rotate_gimbal_with_recovery(-90)
-        self._servo_h_loop()
+        self._servo_h_loop(save_prefix="home")
         self.drone.move_to(self.drone.drone.state['x'] + float(self.config.get('landing_offset', 0.04)),
                            self.drone.drone.state['y'],
                            self.drone.drone.state['z'])
@@ -435,10 +689,11 @@ class RescueController:
         self.drone.drone.state['y'] = 0.0
         self.drone.drone.state['z'] = hz
 
-        print("[RescueController] home点 H 对齐降落...")
-        self._servo_and_land()
+        print("[RescueController] home点 降落...")
+        self.drone.land()
+        time.sleep(17)
 
-        print("[RescueController] ====== 完整任务完成 ======")
+        print("[RescueController] ====== 完整任务完成 =====")
         return True
 
     def _update_rescue_results(self, results: Dict[str, Dict[str, Any]]) -> None:

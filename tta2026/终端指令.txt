@@ -41,3 +41,6 @@ python3 Main.py --config configs/rescue_config.json
 
   # 离线模拟（无硬件）
   python Main.py --config configs/test_offline.json
+
+ #后半段任务（从装货区起飞开始）
+ python Main.py --config configs/rescue_config.json --half "救援点1"
