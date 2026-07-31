@@ -1,0 +1,162 @@
+{
+  "camera_source": "rtmp://0.0.0.0:1935/live",
+  "listen": true,
+  "show_camera": false,
+  "landing_offset": 0.05,
+  "home_point": {
+    "x": 0.7,
+    "y": 0.2,
+    "z": 1.2,
+    "rotate_yaw": 7
+  },
+  "landing_preview_height": 0.5,
+  "target_grade": "1",
+  "target_waypoint_name": "",
+  "target_labels": [
+    "trapped_people",
+    "fire_trapped_people",
+    "ruin_trapped_people",
+    "drop_water"
+  ],
+  "loading_area": {
+    "x": -0.65,
+    "y": -1.0,
+    "z": 1.2,
+    "gimbal_pitch": -90,
+    "rotate_to": 5
+  },
+  "camera_ffmpeg_opts": {
+    "rtsp_transport": "tcp"
+  },
+  "yolo_weights": "yolov8n.pt",
+  "yolo_weights_h": "yolov8n_h.pt",
+  "yolo_weights_grade": "yolov8n_grade.pt",
+  "confidence": 0.4,
+  "h_label": "H",
+  "grade_labels": [
+    "ruin",
+    "collaspe",
+    "leak_danger",
+    "leak_fire",
+    "leak_water",
+    "trapped_people",
+    "fire_trapped_people",
+    "ruin_trapped_people",
+    "drop_water",
+    "earthquake"
+  ],
+  "grade_mapping": {
+    "1": [
+      "trapped_people",
+      "fire_trapped_people",
+      "ruin_trapped_people",
+      "drop_water",
+      "ruin"
+    ],
+    "2": [
+      "leak_danger",
+      "collaspe"
+    ],
+    "3": [
+      "earthquake",
+      "leak_fire",
+      "leak_water"
+    ]
+  },
+  "h_marker_size": 0.1,
+  "h_angle_correction_enabled": true,
+  "h_angle_conf_threshold": 0.20,
+  "h_angle_sign": 1.0,
+  "h_angle_max_correction": 30.0,
+  "h_angle_debug": false,
+  "grade_distance_scale": 2.0,
+  "search_step": 0.1,
+  "h_search_max_height": 2.2,
+  "h_search_step_height": 0.3,
+  "drone": {
+    "enabled": true,
+    "ip": "192.168.31.172",
+    "port": 18080,
+    "initial_position": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 0.0
+    },
+    "speed": {
+      "translate": 0.3,
+      "rotate": 15.0
+    },
+    "threshold": {
+      "translate": 200,
+      "rotate": 200
+    },
+    "max_retries": 15
+  },
+  "waypoints": [
+    {
+      "name": "救援点2",
+      "x": 1.1,
+      "y": 2.75,
+      "z": 1.2,
+      "rotation": 90,
+      "gimbal_pitch": -90,
+      "rotate_to": 9,
+      "rotation_offset": 5
+    },
+    {
+      "name": "救援点1",
+      "x": -1.35,
+      "y": 2.6,
+      "z": 1.2,
+      "rotation": 90,
+      "gimbal_pitch": -90,
+      "rotate_to": 0,
+      "rotation_offset": 7
+    },
+    {
+      "name": "救援点3",
+      "x": 1.65,
+      "y": -3.8,
+      "z": 1.2,
+      "rotation": -90,
+      "gimbal_pitch": -90,
+      "rotate_to": 0,
+      "rotation_offset": 0
+    },
+    {
+      "name": "救援点4",
+      "x": -0.65,
+      "y": -4.0,
+      "z": 1.2,
+      "rotation": -90,
+      "gimbal_pitch": -90,
+      "rotate_to": 16,
+      "rotation_offset": 0
+    }
+  ],
+  "rescue_points": [
+    {
+      "name": "救援点2"
+    },
+    {
+      "name": "救援点1"
+    },
+    {
+      "name": "救援点3"
+    },
+    {
+      "name": "救援点4"
+    }
+  ],
+  "output": {
+    "folder": "output",
+    "csv_filename": "rescue_levels.csv"
+  },
+  "car": {
+    "enabled": false,
+    "ip": "10.203.94.227",
+    "port": 5000
+  },
+  "servo_settle_extra": 1.0
+}

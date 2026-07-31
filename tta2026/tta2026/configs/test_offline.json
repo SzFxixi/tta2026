@@ -1,0 +1,37 @@
+{
+  "camera_source": "test_images",
+  "camera_loop": true,
+  "camera_ffmpeg_opts": {},
+  "yolo_weights": "yolov8n.pt",
+  "yolo_weights_h": "yolov8n_h.pt",
+  "yolo_weights_grade": "yolov8n_grade.pt",
+  "confidence": 0.6,
+  "h_label": "H",
+  "grade_labels": ["ruin","collaspe","leak_danger","leak_fire","leak_water","trapped_people","fire_trapped_people","ruin_trapped_people","drop_water","earthquake"],
+  "grade_mapping": {
+    "1": ["trapped_people", "fire_trapped_people","ruin_trapped_people","drop_water"],
+    "2": ["leak_danger", "collaspe","ruin"],
+    "3": ["earthquake", "leak_fire", "leak_water","leak fire"]
+  },
+  "grade_distance_scale": 10.0,
+  "search_step": 0.5,
+  "drone": {
+    "enabled": false
+  },
+  "waypoints": [
+    { "name": "救援点1", "x": 0.0, "y": 0.0, "z": 1.5 , "rotation": 0},
+    { "name": "救援点2", "x": 0.0, "y": 0.0, "z": 1.5 , "rotation": 0},
+    { "name": "救援点3", "x": 0.0, "y": 0.0, "z": 1.5 , "rotation": 0},
+    { "name": "救援点4", "x": 0.0, "y": 0.0, "z": 1.5 , "rotation": 0}
+  ],
+  "rescue_points": [
+    { "name": "救援点1" },
+    { "name": "救援点2" },
+    { "name": "救援点3" },
+    { "name": "救援点4" }
+  ],
+  "output": {
+    "folder": "output",
+    "csv_filename": "rescue_levels.csv"
+  }
+}
